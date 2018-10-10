@@ -1,12 +1,12 @@
 (ns drl-control-liftingcast.main
-  (:require [clojure.core.async :as async :refer [<! >!]]
+  (:require [cemerick.url :as url]
+            [clojure.core.async :as async :refer [<! >!]]
             [clojure.edn :as edn]
             [clojure.spec.alpha :as s]
             [clojure.spec.test.alpha :as stest]
             [clojure.string :as string]
             [clojure.test :as test]
             [com.ashafa.clutch :as couch]
-            [cemerick.url :as url]
             [java-time]))
 
 
