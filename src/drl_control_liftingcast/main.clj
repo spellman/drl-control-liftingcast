@@ -130,6 +130,18 @@
 
 (s/def :liftingcast/attribute string?)
 
+
+(defn valid-decision-from-referee? [{:keys [decision cards]}]
+  (cond
+    (= "good" decision)
+    (every? false? (vals cards))
+
+    (= "bad" decision)
+    (pos-int? (count (filter true? (vals cards))))
+
+    :else
+    false))
+
 (s/def :liftingcast/card boolean?)
 
 (s/def :liftingcast/red :liftingcast/card)
@@ -145,8 +157,9 @@
 (s/def :liftingcast/ruling #{"good" "bad"})
 (s/def :liftingcast/decision (s/nilable :liftingcast/ruling))
 (s/def :liftingcast.decisions/decision
-  (s/keys :req-un [:liftingcast/decision
-                   :liftingcast/cards]))
+  (s/and (s/keys :req-un [:liftingcast/decision
+                          :liftingcast/cards])
+         valid-decision-from-referee?))
 (s/def :liftingcast/left :liftingcast.decisions/decision)
 (s/def :liftingcast/head :liftingcast.decisions/decision)
 (s/def :liftingcast/right :liftingcast.decisions/decision)
