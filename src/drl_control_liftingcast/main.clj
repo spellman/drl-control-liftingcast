@@ -37,10 +37,6 @@
 (def username "madkjss3n61g")
 (def password "xm4sj4ms")
 
-;; (def db-url (url/url "http://127.0.0.1:5984" (str meet-id "_1")))
-;; (def username "test")
-;; (def password "test")
-
 (def db (-> db-url
             (assoc :username username
                    :password password)
@@ -435,15 +431,6 @@
         right-referee (get-referee in-memory-db "right")
         current-attempt (in-memory-db @current-attempt-id)
         next-attempt-id (select-next-attempt-id in-memory-db platform-id)]
-    #_[(update-document left-referee (:left decisions) :liftingcast.referee/changes)
-     (update-document head-referee (:head decisions) :liftingcast.referee/changes)
-     (update-document right-referee (:right decisions) :liftingcast.referee/changes)
-     (update-document current-attempt
-                      {:result result :decisions decisions}
-                      :liftingcast.attempt/changes)
-     (update-document (in-memory-db platform-id)
-                      {:currentAttemptId next-attempt-id :clockState "initial"}
-                      :liftingcast.platform/changes)]
     (couch/bulk-update
      db
      [(update-document left-referee (:left decisions) :liftingcast.referee/changes)
@@ -488,7 +475,6 @@
 (s/fdef reset-timer
   :args (s/cat :clock-timer-length pos-int?))
 
-;; (def drl-file-path "/home/pi/Desktop/DRL_Files/DRL_data.json")
 (def drl-output-file
   (io/file "/home/cort/Projects/drl-control-liftingcast/DRL_data.json"))
 
