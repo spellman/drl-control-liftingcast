@@ -10,8 +10,13 @@
             [clojure.string :as string]
             [clojure.test :as test]
             [com.ashafa.clutch :as couch]
+            [expound.alpha :as expound]
             [java-time]
             [juxt.dirwatch :as watch]))
+
+;; Set s/*explain-out* to expound/printer on all threads.
+(set! s/*explain-out* expound/printer)
+(alter-var-root #'s/*explain-out* (constantly expound/printer))
 
 (def meet-id "madkjss3n61g")
 (def platform-ids ["psxoihq1ncdm"
@@ -383,7 +388,7 @@
     (if-not (s/valid? changes-spec new-changes)
       (do
         (println "INVALID CHANGES:")
-        (println (s/explain changes-spec new-changes)))
+        (println (expound/expound changes-spec new-changes)))
       (update (merge doc m) :changes
               (fn [old new]
                 (->> new
