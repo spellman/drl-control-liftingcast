@@ -440,39 +440,6 @@
 
 (couch/start-changes ca)
 
-(defn judge-attempt-and-select-next-lifter
-  [decisions liftingcast-lights-on-duration-ms turn-off-lights-chan]
-  (let [result (liftingcast-decisions->liftingcast-result decisions)
-        in-memory-db (-> db get-all-docs index-docs-by-id)
-        left-referee (get-referee in-memory-db "left")
-        head-referee (get-referee in-memory-db "head")
-        right-referee (get-referee in-memory-db "right")
-        current-attempt (in-memory-db @current-attempt-id)
-        next-attempt-id (select-next-attempt-id in-memory-db platform-id)]
-    (couch/bulk-update
-     db
-     [(update-document left-referee (:left decisions) :liftingcast.referee/changes)
-      (update-document head-referee (:head decisions) :liftingcast.referee/changes)
-      (update-document right-referee (:right decisions) :liftingcast.referee/changes)])
-    (couch/put-document
-     db
-     (update-document current-attempt
-                      {:result result :decisions decisions}
-                      :liftingcast.attempt/changes))
-    (couch/put-document
-     db
-     (update-document (in-memory-db platform-id)
-                      {:currentAttemptId next-attempt-id :clockState "initial"}
-                      :liftingcast.platform/changes))
-    (async/go
-      (<! (async/timeout liftingcast-lights-on-duration-ms))
-      (>! turn-off-lights-chan :_))))
-
-(s/fdef judge-attempt-and-select-next-lifter
-  :args (s/cat :decisions :liftingcast/decisions
-               :liftingcast-lights-on-duration-ms nat-int?
-               :turn-off-lights-chan some?))
-
 (defn start-timer [clock-timer-length]
   (couch/put-document
    db
@@ -496,7 +463,7 @@
 (def drl-output-file
   (io/file "/home/cort/Projects/drl-control-liftingcast/DRL_data.json"))
 
-(defn make-handler [liftingcast-lights-on-duration-ms turn-off-lights-chan]
+(defn make-handler [liftingcast-lights-on-duration-ms next-attempt-chan]
   (fn [{:keys [file action]}]
    (println "FILE CHANGED:" file "," action)
    (let [input (-> file slurp (json/parse-string true))]
@@ -504,11 +471,22 @@
      (pprint input)
      (case (:statusType input)
        "LIGHTS"
-       (judge-attempt-and-select-next-lifter {:left (:refLeft input)
-                                              :head (:refHead input)
-                                              :right (:refRight input)}
-                                             liftingcast-lights-on-duration-ms
-                                             turn-off-lights-chan)
+       (let [decisions {:left (:refLeft input)
+                        :head (:refHead input)
+                        :right (:refRight input)}
+             result (liftingcast-decisions->liftingcast-result decisions)
+             left-referee (get-document (:left position->referee-id))
+             head-referee (get-document (:head position->referee-id))
+             right-referee (get-document (:right position->referee-id))]
+         (couch/bulk-update
+          db
+          [(update-document left-referee (:left decisions) :liftingcast.referee/changes)
+           (update-document head-referee (:head decisions) :liftingcast.referee/changes)
+           (update-document right-referee (:right decisions) :liftingcast.referee/changes)])
+
+         (async/go
+           (<! (async/timeout liftingcast-lights-on-duration-ms))
+           (>! next-attempt-chan {:result result :decisions decisions})))
 
        "CLOCK"
        (case (:clockState input)
@@ -531,8 +509,8 @@
                               (.getAbsolutePath file)))
         input-file-changes-chan (async/chan 10 (filter drl-output-file?))
         liftingcast-lights-on-duration-ms 5000
-        turn-off-lights-chan (async/chan)
-        handler (make-handler liftingcast-lights-on-duration-ms turn-off-lights-chan)
+        next-attempt-chan (async/chan)
+        handler (make-handler liftingcast-lights-on-duration-ms next-attempt-chan)
         wa (watch/watch-dir #(async/put! input-file-changes-chan %) dir-to-watch)]
     (set-error-mode! wa :continue)
     (set-error-handler! wa (fn [ag ex]
@@ -552,20 +530,45 @@
 
     (async/go-loop []
       (try
-        (<! turn-off-lights-chan)
-        ;; TODO: retry this on error
-        (let [all-docs (get-all-docs db)
-              in-memory-db (index-docs-by-id all-docs)
-              [rleft rhead rright] (map get-document (vals position->referee-id))
-              reset-data {:cards nil :decision nil}]
+        (let [{:keys [result decisions]} (<! next-attempt-chan)
+              in-memory-db (-> db get-all-docs index-docs-by-id)
+              current-attempt (in-memory-db @current-attempt-id)
+              left-referee (get-referee in-memory-db "left")
+              head-referee (get-referee in-memory-db "head")
+              right-referee (get-referee in-memory-db "right")
+              referee-reset-data {:cards nil :decision nil}
+              next-attempt-id (select-next-attempt-id in-memory-db platform-id)]
+          ;; TODO: retry this on error
+          (couch/put-document
+           db
+           (update-document current-attempt
+                            {:result result :decisions decisions}
+                            :liftingcast.attempt/changes))
+
+          ;; TODO: retry this on error
+          (<! (async/timeout 500))
           (couch/bulk-update
            db
-           [(update-document rleft reset-data :liftingcast.referee/changes)
-            (update-document rhead reset-data :liftingcast.referee/changes)
-            (update-document rright reset-data :liftingcast.referee/changes)]))
+           [(update-document left-referee
+                             referee-reset-data
+                             :liftingcast.referee/changes)
+            (update-document head-referee
+                             referee-reset-data
+                             :liftingcast.referee/changes)
+            (update-document right-referee
+                             referee-reset-data
+                             :liftingcast.referee/changes)])
+
+          (<! (async/timeout 500))
+          ;; TODO: retry this on error
+          (couch/put-document
+           db
+           (update-document (in-memory-db platform-id)
+                            {:currentAttemptId next-attempt-id :clockState "initial"}
+                            :liftingcast.platform/changes)))
 
         (catch Exception e
-          (println "\n\n\n\nException in turn-off-lights-chan-reader handler:")
+          (println "\n\n\n\nException in next-attempt-chan-reader handler:")
           (println e)
           (print "\n\n\n\n")))
       (recur))))
