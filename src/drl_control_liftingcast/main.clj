@@ -532,24 +532,42 @@
         input-file-changes-chan (async/chan 10 (filter drl-output-file?))
         liftingcast-lights-on-duration-ms 5000
         turn-off-lights-chan (async/chan)
-        handler (make-handler liftingcast-lights-on-duration-ms turn-off-lights-chan)]
-    (watch/watch-dir #(async/put! input-file-changes-chan %) dir-to-watch)
+        handler (make-handler liftingcast-lights-on-duration-ms turn-off-lights-chan)
+        wa (watch/watch-dir #(async/put! input-file-changes-chan %) dir-to-watch)]
+    (set-error-mode! wa :continue)
+    (set-error-handler! wa (fn [ag ex]
+                             (println "\n\n\n\nException in file-watch agent:")
+                             (println ex)
+                             (print "\n\n\n\n")))
 
     (async/go-loop []
-      (handler (<! input-file-changes-chan))
+      (try
+        (handler (<! input-file-changes-chan))
+
+        (catch Exception e
+          (println "\n\n\n\nException in file-watch handler:")
+          (println e)
+          (print "\n\n\n\n")))
       (recur))
 
     (async/go-loop []
-      (<! turn-off-lights-chan)
-      (let [all-docs (get-all-docs db)
-            in-memory-db (index-docs-by-id all-docs)
-            [rleft rhead rright] (map get-document (vals position->referee-id))
-            reset-data {:cards nil :decision nil}]
-        (couch/bulk-update
-         db
-         [(update-document rleft reset-data :liftingcast.referee/changes)
-          (update-document rhead reset-data :liftingcast.referee/changes)
-          (update-document rright reset-data :liftingcast.referee/changes)]))
+      (try
+        (<! turn-off-lights-chan)
+        ;; TODO: retry this on error
+        (let [all-docs (get-all-docs db)
+              in-memory-db (index-docs-by-id all-docs)
+              [rleft rhead rright] (map get-document (vals position->referee-id))
+              reset-data {:cards nil :decision nil}]
+          (couch/bulk-update
+           db
+           [(update-document rleft reset-data :liftingcast.referee/changes)
+            (update-document rhead reset-data :liftingcast.referee/changes)
+            (update-document rright reset-data :liftingcast.referee/changes)]))
+
+        (catch Exception e
+          (println "\n\n\n\nException in turn-off-lights-chan-reader handler:")
+          (println e)
+          (print "\n\n\n\n")))
       (recur))))
 
 
