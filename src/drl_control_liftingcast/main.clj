@@ -1,14 +1,17 @@
 (ns drl-control-liftingcast.main
   (:require [cemerick.url :as url]
+            [cheshire.core :as json]
             [clojure.core.async :as async :refer [<! >!]]
             [clojure.edn :as edn]
+            [clojure.java.io :as io]
+            [clojure.pprint :refer [pprint]]
             [clojure.spec.alpha :as s]
             [clojure.spec.test.alpha :as stest]
             [clojure.string :as string]
             [clojure.test :as test]
             [com.ashafa.clutch :as couch]
-            [java-time]))
-
+            [java-time]
+            [juxt.dirwatch :as watch]))
 
 (def meet-id "madkjss3n61g")
 (def platform-ids ["psxoihq1ncdm"
@@ -117,51 +120,6 @@
 (defn set-current-attempt-id! [db platform-id]
   (reset! current-attempt-id (fetch-current-attempt-id db platform-id)))
 
-(s/def :liftingcast.referee/_id
-  (-> position->referee-id vals set))
-
-(defn valid-decision-from-referee? [[white-light red-card blue-card yellow-card]]
-  (not= white-light (or red-card blue-card yellow-card)))
-
-(s/def :drl/decision-token boolean?)
-
-(s/def :drl/decision-from-referee
-  (s/and valid-decision-from-referee?
-         (s/cat :drl/white-light :drl/decision-token
-                :drl/red-card :drl/decision-token
-                :drl/blue-card :drl/decision-token
-                :drl/yellow-card :drl/decision-token)))
-
-(s/def :drl/decision
-  (s/and (s/coll-of boolean? :count 12 into [])
-         (s/conformer (partial partition 4))
-         (s/cat :drl/left :drl/decision-from-referee
-                :drl/head :drl/decision-from-referee
-                :drl/right :drl/decision-from-referee)))
-
-(comment
-  (s/conform :drl/decision
-             [true false false false
-              true false false false
-              true false false false])
-  ;; => #:drl{:left
-  ;;          #:drl{:white-light true,
-  ;;                :red-card false,
-  ;;                :blue-card false,
-  ;;                :yellow-card false},
-  ;;          :head
-  ;;          #:drl{:white-light true,
-  ;;                :red-card false,
-  ;;                :blue-card false,
-  ;;                :yellow-card false},
-  ;;          :right
-  ;;          #:drl{:white-light true,
-  ;;                :red-card false,
-  ;;                :blue-card false,
-  ;;                :yellow-card false}}
-  )
-
-
 (s/def :liftingcast/_rev string?) ; used in top level of docs
 (s/def :liftingcast/rev :liftingcast/_rev) ; used in changes
 ;; liftingcast/timeStamp could be more specific but I only care that it is
@@ -196,10 +154,6 @@
                    :liftingcast/head
                    :liftingcast/right]))
 
-(s/def :liftingcast/clock-state #{"initial" "started"})
-
-
-
 (s/def :liftingcast/document
   (s/keys :req-un [:liftingcast/_rev
                    :liftingcast/createDate]))
@@ -209,6 +163,10 @@
                    :liftingcast/attribute
                    :liftingcast/timeStamp]))
 
+
+
+(s/def :liftingcast.referee/_id
+  (-> position->referee-id vals set))
 
 (defmulti referee-change :attribute)
 
@@ -286,6 +244,10 @@
 
 
 
+(s/def :liftingcast/clock-state #{"initial" "started"})
+
+(s/def :liftingcast/clock-timer-length nat-int?)
+
 (defmulti platform-change :attribute)
 
 (s/def :liftingcast.platform.change.current-attempt-id/value :liftingcast/_id)
@@ -298,6 +260,12 @@
   (s/merge :liftingcast/change
            (s/keys :req-un [:liftingcast.platform.change.clock-state/value])))
 
+(s/def :liftingcast.platform.change.clock-timer-length/value
+  :liftingcast/clock-timer-length)
+(defmethod platform-change "clockTimerLength" [_]
+  (s/merge :liftingcast/change
+           (s/keys :req-un [:liftingcast.platform.change.clock-timer-length/value])))
+
 (s/def :liftingcast.platform/changes
   (s/every (s/multi-spec platform-change :attribute)
            :kind vector?
@@ -305,7 +273,7 @@
 
 (s/def :liftingcast/name string?)
 (s/def :liftingcast/barAndCollarsWeight pos-int?)
-(s/def :liftingcast/clockTimerLength nat-int?)
+(s/def :liftingcast/clockTimerLength :liftingcast/clock-timer-length)
 (s/def :liftingcast/clockState :liftingcast/clock-state)
 (s/def :liftingcast/currentAttemptId :liftingcast.attempt/_id)
 
@@ -318,48 +286,6 @@
                             :liftingcast/clockTimerLength
                             :liftingcast/clockState
                             :liftingcast/currentAttemptId])))
-
-
-
-(defn drl-decision-from-referee->liftingcast-decision
-  [{:keys [drl/white-light]}]
-  (if white-light
-    "good"
-    "bad"))
-
-(s/fdef drl-decision-from-referee->liftingcast-decision
-  :args (s/cat :drl-decision-from-referee (s/keys :req [:drl/white-light]))
-  :ret :liftingcast/decision)
-
-(defn drl-decision-from-referee->liftingcast-cards
-  [{:keys [drl/red-card drl/blue-card drl/yellow-card]}]
-  {:red red-card
-   :blue blue-card
-   :yellow yellow-card})
-
-(s/fdef drl-decision-from-referee->liftingcast-cards
-  :args (s/cat :drl-decision-from-referee (s/keys :req [:drl/red-card
-                                                        :drl/blue-card
-                                                        :drl/yellow-card]))
-  :ret :liftingcast/cards)
-
-;; TODO: Use Expound!
-(defn drl-decision->liftingcast-decisions [drl-decision]
-  (let [conformed (s/conform :drl/decision drl-decision)]
-    (if (s/invalid? conformed)
-      (do
-        (println "INVALID INPUT FROM DRL:")
-        (println (s/explain :drl/decision drl-decision)))
-      (->> conformed
-           (map (fn [[position decision-from-referee]]
-                  {(keyword (name position))
-                   {:decision (drl-decision-from-referee->liftingcast-decision decision-from-referee)
-                    :cards (drl-decision-from-referee->liftingcast-cards decision-from-referee)}}))
-           (into {})))))
-
-(s/fdef drl-decision->liftingcast-decisions
-  :args (s/cat :drl-decision :drl/decision)
-  :ret :liftingcast/decisions)
 
 (defn liftingcast-decisions->liftingcast-result [decisions]
   (let [decision->count (frequencies (map :decision (vals decisions)))
@@ -469,35 +395,6 @@
                      (take-last num-changes-to-keep)))
               new-changes))))
 
-(defn update-referee-document [referee m]
-  (update-document referee m :liftingcast.referee/changes))
-
-(s/fdef update-referee-document
-  :args (s/cat :referee :liftingcast/referee
-               :m (s/keys :opt-un [:liftingcast/cards
-                                   :liftingcast/decision]))
-  :ret :liftingcast/referee)
-
-(defn update-attempt-document [attempt m]
-  (update-document attempt m :liftingcast.attempt/changes))
-
-(s/fdef update-attempt-document
-  :args (s/cat :attempt :liftingcast/attempt
-               :m (s/keys :opt-un [:liftingcast/result
-                                   :liftingcast/decisions]))
-  :ret :liftingcast/attempt)
-
-(defn update-platform-document [platform m]
-  (update-document platform m :liftingcast.platform/changes))
-
-(s/fdef update-platform-document
-  :args (s/cat :platform :liftingcast/platform
-               :m (s/keys :opt-un [:liftingcast/currentAttemptId
-                                   :liftingcast/clockState]))
-  :ret :liftingcast/platform)
-
-
-
 (set-current-attempt-id! db platform-id)
 
 (def ca (couch/change-agent db))
@@ -508,100 +405,212 @@
                (= platform-id (:id change))
                (do
                  (println "Change to this platform doc\n"
-                          (with-out-str (clojure.pprint/pprint change))
+                          (with-out-str (pprint change))
                           "\n")
                  (set-current-attempt-id! db platform-id))
 
                (s/valid? :liftingcast.referee/_id (:id change))
                (println "Change to referee doc\n"
-                        (with-out-str (clojure.pprint/pprint change))
+                        (with-out-str (pprint change))
                         "\n")
 
                (s/valid? :liftingcast.attempt/_id (:id change))
                (println "Change to attempt doc\n"
-                        (with-out-str (clojure.pprint/pprint change))
+                        (with-out-str (pprint change))
                         "\n")
 
                :else
                (println "other change\n"
-                        (with-out-str (clojure.pprint/pprint change))
+                        (with-out-str (pprint change))
                         "\n"))))
 
 (couch/start-changes ca)
 
-(def turn-off-lights-chan (async/chan))
-(def liftingcast-lights-on-duration-ms 5000)
-
-(async/go-loop []
-  (<! turn-off-lights-chan)
-  (let [all-docs (get-all-docs db)
-        in-memory-db (index-docs-by-id all-docs)
-        [rleft rhead rright] (map get-document (vals position->referee-id))
-        reset-data {:cards nil :decision nil}]
-    (couch/bulk-update
-     db
-     [(update-referee-document rleft reset-data)
-      (update-referee-document rhead reset-data)
-      (update-referee-document rright reset-data)]))
-  (recur))
-
-(defn judge-attempt-and-select-next-lifter [drl-decision]
-  (let [decisions (drl-decision->liftingcast-decisions drl-decision)
-        result (liftingcast-decisions->liftingcast-result decisions)
+(defn judge-attempt-and-select-next-lifter
+  [decisions liftingcast-lights-on-duration-ms turn-off-lights-chan]
+  (let [result (liftingcast-decisions->liftingcast-result decisions)
         in-memory-db (-> db get-all-docs index-docs-by-id)
         left-referee (get-referee in-memory-db "left")
         head-referee (get-referee in-memory-db "head")
         right-referee (get-referee in-memory-db "right")
         current-attempt (in-memory-db @current-attempt-id)
         next-attempt-id (select-next-attempt-id in-memory-db platform-id)]
+    #_[(update-document left-referee (:left decisions) :liftingcast.referee/changes)
+     (update-document head-referee (:head decisions) :liftingcast.referee/changes)
+     (update-document right-referee (:right decisions) :liftingcast.referee/changes)
+     (update-document current-attempt
+                      {:result result :decisions decisions}
+                      :liftingcast.attempt/changes)
+     (update-document (in-memory-db platform-id)
+                      {:currentAttemptId next-attempt-id :clockState "initial"}
+                      :liftingcast.platform/changes)]
     (couch/bulk-update
      db
-     [(update-referee-document left-referee (:left decisions))
-      (update-referee-document head-referee (:head decisions))
-      (update-referee-document right-referee (:right decisions))
-      (update-attempt-document current-attempt {:result result
-                                                :decisions decisions})
-      (update-platform-document (in-memory-db platform-id) {:currentAttemptId next-attempt-id
-                                                            :clockState "initial"})])
+     [(update-document left-referee (:left decisions) :liftingcast.referee/changes)
+      (update-document head-referee (:head decisions) :liftingcast.referee/changes)
+      (update-document right-referee (:right decisions) :liftingcast.referee/changes)])
+    (couch/put-document
+     db
+     (update-document current-attempt
+                      {:result result :decisions decisions}
+                      :liftingcast.attempt/changes))
+    (couch/put-document
+     db
+     (update-document (in-memory-db platform-id)
+                      {:currentAttemptId next-attempt-id :clockState "initial"}
+                      :liftingcast.platform/changes))
     (async/go
       (<! (async/timeout liftingcast-lights-on-duration-ms))
       (>! turn-off-lights-chan :_))))
 
 (s/fdef judge-attempt-and-select-next-lifter
-  :args (s/cat :drl-decision :drl/decision))
+  :args (s/cat :decisions :liftingcast/decisions
+               :liftingcast-lights-on-duration-ms nat-int?
+               :turn-off-lights-chan some?))
 
-(defn start-timer []
+(defn start-timer [clock-timer-length]
   (couch/put-document
    db
-   (update-platform-document (get-document platform-id) {:clockState "started"})))
+   (update-document (get-document platform-id)
+                    {:clockState "started" :clockTimerLength clock-timer-length}
+                    :liftingcast.platform/changes)))
 
-(defn reset-timer []
+(s/fdef start-timer
+  :args (s/cat :clock-timer-length pos-int?))
+
+(defn reset-timer [clock-timer-length]
   (couch/put-document
    db
-   (update-platform-document (get-document platform-id) {:clockState "initial"})))
+   (update-document (get-document platform-id)
+                    {:clockState "initial" :clockTimerLength clock-timer-length}
+                    :liftingcast.platform/changes)))
 
-(defn get-input []
-  (edn/read-string (read-line)))
+(s/fdef reset-timer
+  :args (s/cat :clock-timer-length pos-int?))
 
-(defn go []
-  (loop [[f & args] (get-input)]
-    (println "f:" f)
-    (println "args:" args)
-    (case f
-      "judge-attempt-and-select-next-lifter"
-      (judge-attempt-and-select-next-lifter (first args))
+;; (def drl-file-path "/home/pi/Desktop/DRL_Files/DRL_data.json")
+(def drl-output-file
+  (io/file "/home/cort/Projects/drl-control-liftingcast/DRL_data.json"))
 
-      "start-timer"
-      (start-timer)
+(defn make-handler [liftingcast-lights-on-duration-ms turn-off-lights-chan]
+  (fn [{:keys [file action]}]
+   (println "FILE CHANGED:" file "," action)
+   (let [input (-> file slurp (json/parse-string true))]
+     (println "Input:")
+     (pprint input)
+     (case (:statusType input)
+       "LIGHTS"
+       (judge-attempt-and-select-next-lifter {:left (:refLeft input)
+                                              :head (:refHead input)
+                                              :right (:refRight input)}
+                                             liftingcast-lights-on-duration-ms
+                                             turn-off-lights-chan)
 
-      "reset-timer"
-      (reset-timer)
+       "CLOCK"
+       (case (:clockState input)
+         "STARTED"
+         (start-timer (:timerLength input))
 
-      (println "No match for" f))
-    (recur (get-input))))
+         "RESET"
+         (reset-timer (:timerLength input))
 
+         (println "UNRECOGNIZED CLOCK STATE IN INPUT:"
+                  (with-out-str (pprint input))))
+
+       (println "UNRECOGNIZED STATUS TYPE IN INPUT:"
+                (with-out-str (pprint input)))))))
+
+(defn -main [& args]
+  (let [dir-to-watch (.getParentFile drl-output-file)
+        drl-output-file? (fn [{:keys [file]}]
+                           (= (.getAbsolutePath drl-output-file)
+                              (.getAbsolutePath file)))
+        input-file-changes-chan (async/chan 10 (filter drl-output-file?))
+        liftingcast-lights-on-duration-ms 5000
+        turn-off-lights-chan (async/chan)
+        handler (make-handler liftingcast-lights-on-duration-ms turn-off-lights-chan)]
+    (watch/watch-dir #(async/put! input-file-changes-chan %) dir-to-watch)
+
+    (async/go-loop []
+      (handler (<! input-file-changes-chan))
+      (recur))
+
+    (async/go-loop []
+      (<! turn-off-lights-chan)
+      (let [all-docs (get-all-docs db)
+            in-memory-db (index-docs-by-id all-docs)
+            [rleft rhead rright] (map get-document (vals position->referee-id))
+            reset-data {:cards nil :decision nil}]
+        (couch/bulk-update
+         db
+         [(update-document rleft reset-data :liftingcast.referee/changes)
+          (update-document rhead reset-data :liftingcast.referee/changes)
+          (update-document rright reset-data :liftingcast.referee/changes)]))
+      (recur))))
+
+
+
+(stest/instrument)
+
+
+
+(defn fstart []
+  (spit drl-output-file
+        (json/generate-string
+         {:statusType "CLOCK"
+          :clockState "STARTED"
+          :timerLength 60000})))
+
+(defn freset []
+  (spit drl-output-file
+        (json/generate-string
+         {:statusType "CLOCK"
+          :clockState "RESET"
+          :timerLength 60000})))
+
+(defn fgood []
+  (spit drl-output-file
+        (json/generate-string
+         {:statusType "LIGHTS"
+          :refLeft {:decision "good"
+                    :cards {:red false :blue false :yellow false}}
+          :refHead {:decision "good"
+                    :cards {:red false :blue false :yellow false}}
+          :refRight {:decision "good"
+                     :cards {:red false :blue false :yellow false}}}
+         {:pretty true})))
+
+(defn fbad []
+  (spit drl-output-file
+        (json/generate-string
+         {:statusType "LIGHTS"
+          :refLeft {:decision "bad"
+                    :cards {:red true :blue true :yellow true}}
+          :refHead {:decision "bad"
+                    :cards {:red true :blue true :yellow true}}
+          :refRight {:decision "bad"
+                     :cards {:red true :blue true :yellow true}}}
+         {:pretty true})))
+
+(defn fread []
+  (-> drl-output-file slurp (json/parse-string true)))
 
 
 (comment
-  (stest/instrument)
+  (do
+    (fstart)
+    (Thread/sleep 2000)
+    (fgood))
+
+  (do
+    (fstart)
+    (Thread/sleep 2000)
+    (fbad))
+
+  (freset)
+
+  (fgood)
+
+  (fbad)
+
   )
