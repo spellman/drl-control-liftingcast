@@ -30,13 +30,13 @@
 
 
 
-;; (def db-url (url/url "http://couchdb.liftingcast.com" meet-id))
-;; (def username "madkjss3n61g")
-;; (def password "xm4sj4ms")
+(def db-url (url/url "http://couchdb.liftingcast.com" meet-id))
+(def username "madkjss3n61g")
+(def password "xm4sj4ms")
 
-(def db-url (url/url "http://127.0.0.1:5984" (str meet-id "_1")))
-(def username "test")
-(def password "test")
+;; (def db-url (url/url "http://127.0.0.1:5984" (str meet-id "_1")))
+;; (def username "test")
+;; (def password "test")
 
 (def db (-> db-url
             (assoc :username username
