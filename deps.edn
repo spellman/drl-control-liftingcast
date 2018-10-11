@@ -4,7 +4,6 @@
   com.ashafa/clutch {:mvn/version "0.4.0"}
   com.cemerick/url {:mvn/version "0.1.1"}
   expound {:mvn/version "0.7.1"}
-  juxt/dirwatch {:mvn/version "0.2.3"}
   org.clojure/clojure {:mvn/version "1.9.0"}
   org.clojure/core.async {:mvn/version "0.4.474"}
 

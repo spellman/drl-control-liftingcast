@@ -11,8 +11,7 @@
             [clojure.test :as test]
             [com.ashafa.clutch :as couch]
             [expound.alpha :as expound]
-            [java-time]
-            [juxt.dirwatch :as watch]))
+            [java-time]))
 
 ;; Set s/*explain-out* to expound/printer on all threads.
 (set! s/*explain-out* expound/printer)
@@ -464,59 +463,62 @@
   (io/file "/home/cort/Projects/drl-control-liftingcast/DRL_data.json"))
 
 (defn make-handler [liftingcast-lights-on-duration-ms next-attempt-chan]
-  (fn [{:keys [file action]}]
-   (println "FILE CHANGED:" file "," action)
-   (let [input (-> file slurp (json/parse-string true))]
-     (println "Input:")
-     (pprint input)
-     (case (:statusType input)
-       "LIGHTS"
-       (let [decisions {:left (:refLeft input)
-                        :head (:refHead input)
-                        :right (:refRight input)}
-             result (liftingcast-decisions->liftingcast-result decisions)
-             left-referee (get-document (:left position->referee-id))
-             head-referee (get-document (:head position->referee-id))
-             right-referee (get-document (:right position->referee-id))]
-         (couch/bulk-update
-          db
-          [(update-document left-referee (:left decisions) :liftingcast.referee/changes)
-           (update-document head-referee (:head decisions) :liftingcast.referee/changes)
-           (update-document right-referee (:right decisions) :liftingcast.referee/changes)])
+  (fn [input]
+    (println "Input:")
+    (pprint input)
+    (case (:statusType input)
+      "LIGHTS"
+      (let [decisions {:left (:refLeft input)
+                       :head (:refHead input)
+                       :right (:refRight input)}
+            result (liftingcast-decisions->liftingcast-result decisions)
+            left-referee (get-document (:left position->referee-id))
+            head-referee (get-document (:head position->referee-id))
+            right-referee (get-document (:right position->referee-id))]
+        (couch/bulk-update
+         db
+         [(update-document left-referee (:left decisions) :liftingcast.referee/changes)
+          (update-document head-referee (:head decisions) :liftingcast.referee/changes)
+          (update-document right-referee (:right decisions) :liftingcast.referee/changes)])
 
-         (async/go
-           (<! (async/timeout liftingcast-lights-on-duration-ms))
-           (>! next-attempt-chan {:result result :decisions decisions})))
+        (async/go
+          (<! (async/timeout liftingcast-lights-on-duration-ms))
+          (>! next-attempt-chan {:result result :decisions decisions})))
 
-       "CLOCK"
-       (case (:clockState input)
-         "STARTED"
-         (start-timer (:timerLength input))
+      "CLOCK"
+      (case (:clockState input)
+        "STARTED"
+        (start-timer (:timerLength input))
 
-         "RESET"
-         (reset-timer (:timerLength input))
+        "RESET"
+        (reset-timer (:timerLength input))
 
-         (println "UNRECOGNIZED CLOCK STATE IN INPUT:"
-                  (with-out-str (pprint input))))
+        (println "UNRECOGNIZED CLOCK STATE IN INPUT:"
+                 (with-out-str (pprint input))))
 
-       (println "UNRECOGNIZED STATUS TYPE IN INPUT:"
-                (with-out-str (pprint input)))))))
+      (println "UNRECOGNIZED STATUS TYPE IN INPUT:"
+               (with-out-str (pprint input))))))
+
+(defn parse-drl-output-file []
+  (try
+    (-> drl-output-file slurp (json/parse-string true))
+
+    (catch Exception e
+      {})))
 
 (defn -main [& args]
-  (let [dir-to-watch (.getParentFile drl-output-file)
-        drl-output-file? (fn [{:keys [file]}]
-                           (= (.getAbsolutePath drl-output-file)
-                              (.getAbsolutePath file)))
-        input-file-changes-chan (async/chan 10 (filter drl-output-file?))
+  (let [input-file-changes-chan (async/chan 10)
         liftingcast-lights-on-duration-ms 5000
         next-attempt-chan (async/chan)
-        handler (make-handler liftingcast-lights-on-duration-ms next-attempt-chan)
-        wa (watch/watch-dir #(async/put! input-file-changes-chan %) dir-to-watch)]
-    (set-error-mode! wa :continue)
-    (set-error-handler! wa (fn [ag ex]
-                             (println "\n\n\n\nException in file-watch agent:")
-                             (println ex)
-                             (print "\n\n\n\n")))
+        handler (make-handler liftingcast-lights-on-duration-ms next-attempt-chan)]
+
+    (async/go-loop [old-input (parse-drl-output-file)]
+      (<! (async/timeout 1000))
+      (let [new-input (parse-drl-output-file)]
+        (when (not= new-input old-input)
+          (println "File changed")
+          (>! input-file-changes-chan new-input))
+        (recur new-input)))
 
     (async/go-loop []
       (try
@@ -546,7 +548,6 @@
                             :liftingcast.attempt/changes))
 
           ;; TODO: retry this on error
-          (<! (async/timeout 500))
           (couch/bulk-update
            db
            [(update-document left-referee
@@ -559,7 +560,6 @@
                              referee-reset-data
                              :liftingcast.referee/changes)])
 
-          (<! (async/timeout 500))
           ;; TODO: retry this on error
           (couch/put-document
            db
@@ -631,6 +631,10 @@
     (fstart)
     (Thread/sleep 2000)
     (fbad))
+
+  (fstart)
+
+  (freset)
 
   (freset)
 
