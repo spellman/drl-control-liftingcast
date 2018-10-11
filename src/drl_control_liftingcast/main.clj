@@ -2,17 +2,16 @@
   (:require [cemerick.url :as url]
             [cheshire.core :as json]
             [clojure.core.async :as async :refer [<! >!]]
-            [clojure.edn :as edn]
-            [clojure.java.io :as io]
             [clojure.pprint :refer [pprint]]
             [clojure.spec.alpha :as s]
             [clojure.spec.test.alpha :as stest]
             [clojure.string :as string]
-            [clojure.test :as test]
             [com.ashafa.clutch :as couch]
             [expound.alpha :as expound]
             [java-time]
-            [redismq.core :as mq]))
+            [ring.adapter.jetty :as jetty]
+            [ring.middleware.json :refer [wrap-json-params]]
+            [ring.middleware.keyword-params :refer [wrap-keyword-params]]))
 
 ;; Set s/*explain-out* to expound/printer on all threads.
 (set! s/*explain-out* expound/printer)
@@ -498,23 +497,18 @@
                (with-out-str (pprint input))))))
 
 (defn -main [& args]
-  (let [input-chan (async/chan 10)
-        queue (mq/make-queue "hotqueue:test" {:host "localhost" :port 6379 :db 0})
-        liftingcast-lights-on-duration-ms 5000
+  (let [liftingcast-lights-on-duration-ms 5000
         next-attempt-chan (async/chan)
         input-handler (make-input-handler liftingcast-lights-on-duration-ms
                                           next-attempt-chan)]
-    (mq/queue-worker
-     queue
-     #(async/put! input-chan %)
-     :delay 1
-     :timeout 30
-     :exit-on-error false
-     :threads 1)
-
-    (async/go-loop []
-      (input-handler (<! input-chan))
-      (recur))
+    (async/thread
+      (jetty/run-jetty
+       (-> (fn [request]
+             (input-handler (:params request))
+             {:status 202 :headers {"Content-Type" "text/plain"}})
+           wrap-keyword-params
+           wrap-json-params)
+       {:port 3000}))
 
     (async/go-loop []
       (try
@@ -534,7 +528,6 @@
                             :liftingcast.attempt/changes))
 
           ;; TODO: retry this on error
-          (<! (async/timeout 500))
           (couch/bulk-update
            db
            [(update-document left-referee
@@ -547,7 +540,6 @@
                              referee-reset-data
                              :liftingcast.referee/changes)])
 
-          (<! (async/timeout 500))
           ;; TODO: retry this on error
           (couch/put-document
            db
