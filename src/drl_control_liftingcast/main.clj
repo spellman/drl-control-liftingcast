@@ -12,7 +12,7 @@
             [com.ashafa.clutch :as couch]
             [expound.alpha :as expound]
             [java-time]
-            [juxt.dirwatch :as watch]))
+            [redismq.core :as mq]))
 
 ;; Set s/*explain-out* to expound/printer on all threads.
 (set! s/*explain-out* expound/printer)
@@ -460,72 +460,60 @@
 (s/fdef reset-timer
   :args (s/cat :clock-timer-length pos-int?))
 
-(def drl-output-file
-  (io/file "/home/cort/Projects/drl-control-liftingcast/DRL_data.json"))
+(defn make-input-handler [liftingcast-lights-on-duration-ms next-attempt-chan]
+  (fn [input]
+    (println "Input:")
+    (pprint input)
+    (case (:statusType input)
+      "LIGHTS"
+      (let [decisions {:left (:refLeft input)
+                       :head (:refHead input)
+                       :right (:refRight input)}
+            result (liftingcast-decisions->liftingcast-result decisions)
+            left-referee (get-document (:left position->referee-id))
+            head-referee (get-document (:head position->referee-id))
+            right-referee (get-document (:right position->referee-id))]
+        (couch/bulk-update
+         db
+         [(update-document left-referee (:left decisions) :liftingcast.referee/changes)
+          (update-document head-referee (:head decisions) :liftingcast.referee/changes)
+          (update-document right-referee (:right decisions) :liftingcast.referee/changes)])
 
-(defn make-handler [liftingcast-lights-on-duration-ms next-attempt-chan]
-  (fn [{:keys [file action]}]
-   (println "FILE CHANGED:" file "," action)
-   (let [input (-> file slurp (json/parse-string true))]
-     (println "Input:")
-     (pprint input)
-     (case (:statusType input)
-       "LIGHTS"
-       (let [decisions {:left (:refLeft input)
-                        :head (:refHead input)
-                        :right (:refRight input)}
-             result (liftingcast-decisions->liftingcast-result decisions)
-             left-referee (get-document (:left position->referee-id))
-             head-referee (get-document (:head position->referee-id))
-             right-referee (get-document (:right position->referee-id))]
-         (couch/bulk-update
-          db
-          [(update-document left-referee (:left decisions) :liftingcast.referee/changes)
-           (update-document head-referee (:head decisions) :liftingcast.referee/changes)
-           (update-document right-referee (:right decisions) :liftingcast.referee/changes)])
+        (async/go
+          (<! (async/timeout liftingcast-lights-on-duration-ms))
+          (>! next-attempt-chan {:result result :decisions decisions})))
 
-         (async/go
-           (<! (async/timeout liftingcast-lights-on-duration-ms))
-           (>! next-attempt-chan {:result result :decisions decisions})))
+      "CLOCK"
+      (case (:clockState input)
+        "STARTED"
+        (start-timer (:timerLength input))
 
-       "CLOCK"
-       (case (:clockState input)
-         "STARTED"
-         (start-timer (:timerLength input))
+        "RESET"
+        (reset-timer (:timerLength input))
 
-         "RESET"
-         (reset-timer (:timerLength input))
+        (println "UNRECOGNIZED CLOCK STATE IN INPUT:"
+                 (with-out-str (pprint input))))
 
-         (println "UNRECOGNIZED CLOCK STATE IN INPUT:"
-                  (with-out-str (pprint input))))
-
-       (println "UNRECOGNIZED STATUS TYPE IN INPUT:"
-                (with-out-str (pprint input)))))))
+      (println "UNRECOGNIZED STATUS TYPE IN INPUT:"
+               (with-out-str (pprint input))))))
 
 (defn -main [& args]
-  (let [dir-to-watch (.getParentFile drl-output-file)
-        drl-output-file? (fn [{:keys [file]}]
-                           (= (.getAbsolutePath drl-output-file)
-                              (.getAbsolutePath file)))
-        input-file-changes-chan (async/chan 10 (filter drl-output-file?))
+  (let [input-chan (async/chan 10)
+        queue (mq/make-queue "hotqueue:test" {:host "localhost" :port 6379 :db 0})
         liftingcast-lights-on-duration-ms 5000
         next-attempt-chan (async/chan)
-        handler (make-handler liftingcast-lights-on-duration-ms next-attempt-chan)
-        wa (watch/watch-dir #(async/put! input-file-changes-chan %) dir-to-watch)]
-    (set-error-mode! wa :continue)
-    (set-error-handler! wa (fn [ag ex]
-                             (println "\n\n\n\nException in file-watch agent:")
-                             (println ex)
-                             (print "\n\n\n\n")))
+        input-handler (make-input-handler liftingcast-lights-on-duration-ms
+                                          next-attempt-chan)]
+    (mq/queue-worker
+     queue
+     #(async/put! input-chan %)
+     :delay 1
+     :timeout 30
+     :exit-on-error false
+     :threads 1)
 
     (async/go-loop []
-      (try
-        (handler (<! input-file-changes-chan))
-
-        (catch Exception e
-          (println "\n\n\n\nException in file-watch handler:")
-          (println e)
-          (print "\n\n\n\n")))
+      (input-handler (<! input-chan))
       (recur))
 
     (async/go-loop []
@@ -579,46 +567,46 @@
 
 
 
-(defn fstart []
-  (spit drl-output-file
-        (json/generate-string
-         {:statusType "CLOCK"
-          :clockState "STARTED"
-          :timerLength 60000})))
+;; (defn fstart []
+;;   (spit drl-output-file
+;;         (json/generate-string
+;;          {:statusType "CLOCK"
+;;           :clockState "STARTED"
+;;           :timerLength 60000})))
 
-(defn freset []
-  (spit drl-output-file
-        (json/generate-string
-         {:statusType "CLOCK"
-          :clockState "RESET"
-          :timerLength 60000})))
+;; (defn freset []
+;;   (spit drl-output-file
+;;         (json/generate-string
+;;          {:statusType "CLOCK"
+;;           :clockState "RESET"
+;;           :timerLength 60000})))
 
-(defn fgood []
-  (spit drl-output-file
-        (json/generate-string
-         {:statusType "LIGHTS"
-          :refLeft {:decision "good"
-                    :cards {:red false :blue false :yellow false}}
-          :refHead {:decision "good"
-                    :cards {:red false :blue false :yellow false}}
-          :refRight {:decision "good"
-                     :cards {:red false :blue false :yellow false}}}
-         {:pretty true})))
+;; (defn fgood []
+;;   (spit drl-output-file
+;;         (json/generate-string
+;;          {:statusType "LIGHTS"
+;;           :refLeft {:decision "good"
+;;                     :cards {:red false :blue false :yellow false}}
+;;           :refHead {:decision "good"
+;;                     :cards {:red false :blue false :yellow false}}
+;;           :refRight {:decision "good"
+;;                      :cards {:red false :blue false :yellow false}}}
+;;          {:pretty true})))
 
-(defn fbad []
-  (spit drl-output-file
-        (json/generate-string
-         {:statusType "LIGHTS"
-          :refLeft {:decision "bad"
-                    :cards {:red true :blue true :yellow true}}
-          :refHead {:decision "bad"
-                    :cards {:red true :blue true :yellow true}}
-          :refRight {:decision "bad"
-                     :cards {:red true :blue true :yellow true}}}
-         {:pretty true})))
+;; (defn fbad []
+;;   (spit drl-output-file
+;;         (json/generate-string
+;;          {:statusType "LIGHTS"
+;;           :refLeft {:decision "bad"
+;;                     :cards {:red true :blue true :yellow true}}
+;;           :refHead {:decision "bad"
+;;                     :cards {:red true :blue true :yellow true}}
+;;           :refRight {:decision "bad"
+;;                      :cards {:red true :blue true :yellow true}}}
+;;          {:pretty true})))
 
-(defn fread []
-  (-> drl-output-file slurp (json/parse-string true)))
+;; (defn fread []
+;;   (-> drl-output-file slurp (json/parse-string true)))
 
 
 (comment
@@ -638,4 +626,40 @@
 
   (fbad)
 
+
+  (def test-chan (async/chan 10))
+
+  (async/go-loop []
+    (let [x (<! test-chan)]
+      (println "Received" x))
+    (recur))
+
+
+  (def q (mq/make-queue "hotqueue:test" {:host "localhost" :port 6379 :db 0}))
+
+  (mq/consume q identity)
+
+  (mq/queue-worker
+   q
+   #(async/put! test-chan %)
+   :delay 1
+   :timeout 30
+   :exit-on-error false
+   :threads 1)
+
+
+  (mq/stop-workers @mq/queue-workers)
+
+  (def server1-conn {:pool {} :spec {:host "localhost" :port 6379 :db 0}})
+
+  (car/wcar server1-conn (car/ping))
+
+  (def test-worker
+    (car-mq/worker {:pool {} :spec {:host "localhost" :port 6379 :db 0}} "test"
+                   {:handler (fn [x]
+                               (async/put! test-chan x)
+                               {:status :success})
+                    :eoq-backoff-ms 200}))
+
+  (car-mq/stop test-worker)
   )

@@ -4,14 +4,14 @@
   com.ashafa/clutch {:mvn/version "0.4.0"}
   com.cemerick/url {:mvn/version "0.1.1"}
   expound {:mvn/version "0.7.1"}
-  juxt/dirwatch {:mvn/version "0.2.3"}
   org.clojure/clojure {:mvn/version "1.9.0"}
   org.clojure/core.async {:mvn/version "0.4.474"}
 
   ;; See https://github.com/clojure-clutch/clutch/issues/86
   org.clojure/core.incubator {:mvn/version "0.1.3"}
 
-  org.clojure/spec.alpha {:mvn/version "0.2.176"}}
+  org.clojure/spec.alpha {:mvn/version "0.2.176"}
+  threatgrid/redismq {:mvn/version "0.1.0-SNAPSHOT"}}
 
  :paths ["src"]
 
