@@ -497,18 +497,24 @@
                (with-out-str (pprint input))))))
 
 (defn -main [& args]
-  (let [liftingcast-lights-on-duration-ms 5000
+  (let [input-chan (async/chan 10)
+        liftingcast-lights-on-duration-ms 5000
         next-attempt-chan (async/chan)
         input-handler (make-input-handler liftingcast-lights-on-duration-ms
                                           next-attempt-chan)]
     (async/thread
       (jetty/run-jetty
        (-> (fn [request]
-             (input-handler (:params request))
+             (async/put! input-chan (:params request))
              {:status 202 :headers {"Content-Type" "text/plain"}})
            wrap-keyword-params
            wrap-json-params)
        {:port 3000}))
+
+    (async/go-loop []
+      (<! (async/timeout 1000))
+      (input-handler (<! input-chan))
+      (recur))
 
     (async/go-loop []
       (try
