@@ -594,8 +594,8 @@ Get the platform ID from the URL for the meet page for platform " platform-numbe
     (println "Webserver port:      " port)
     (println "Lights duration (ms):" lights-duration-ms)
     (println "")
-    (info "\nThe webserver output and liftingcast database changes feed will display below.\n\n")
 
+    (debug "\nThe webserver output and liftingcast database changes feed will display below.\n\n")
     (set-current-attempt-id! db platform-id)
 
     (def ca (couch/change-agent db))
