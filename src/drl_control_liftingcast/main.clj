@@ -107,7 +107,7 @@
 (defn valid-decision-from-referee? [{:keys [decision cards]}]
   (cond
     (= "good" decision)
-    (every? false? (vals cards))
+    (= 3 (count (filter false? (vals cards))))
 
     (= "bad" decision)
     (pos? (count (filter true? (vals cards))))
