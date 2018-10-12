@@ -448,6 +448,7 @@
 (couch/start-changes ca)
 
 (defn start-timer [clock-timer-length]
+  ;; TODO: retry this on error
   (couch/put-document
    db
    (update-document (get-document platform-id)
@@ -458,6 +459,7 @@
   :args (s/cat :clock-timer-length pos-int?))
 
 (defn reset-timer [clock-timer-length]
+  ;; TODO: retry this on error
   (couch/put-document
    db
    (update-document (get-document platform-id)
@@ -497,6 +499,7 @@
             left-referee (get-document (:left position->referee-id))
             head-referee (get-document (:head position->referee-id))
             right-referee (get-document (:right position->referee-id))]
+        ;; TODO: retry this on error
         (couch/bulk-update
          db
          [(update-document left-referee (:left decisions) :liftingcast.referee/changes)
