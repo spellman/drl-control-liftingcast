@@ -671,7 +671,7 @@ Get the platform ID from the URL for the meet page for platform " platform-numbe
           (select-attempt-and-reset-clock db platform next-attempt-id))
 
         (catch Exception e
-          (warn "\n\n\n\nException in next-attempt-chan-reader handler:")
+          (warn "\n\n\n\nException in input-chan-reader handler:")
           (warn e)
           (warn "\n\n\n\n")))
       (recur))))
