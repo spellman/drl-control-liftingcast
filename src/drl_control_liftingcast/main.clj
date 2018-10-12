@@ -2,57 +2,34 @@
   (:require [cemerick.url :as url]
             [cheshire.core :as json]
             [clojure.core.async :as async :refer [<! >!]]
+            [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.pprint :refer [pprint]]
+            [clojure.set :as set]
             [clojure.spec.alpha :as s]
             [clojure.spec.test.alpha :as stest]
             [clojure.string :as string]
+            [clojure.tools.cli :as cli]
             [com.ashafa.clutch :as couch]
             [expound.alpha :as expound]
             [java-time]
             [ring.adapter.jetty :as jetty]
             [ring.middleware.json :refer [wrap-json-params]]
-            [ring.middleware.keyword-params :refer [wrap-keyword-params]]))
+            [ring.middleware.keyword-params :refer [wrap-keyword-params]]
+            [taoensso.timbre :as timbre
+             :refer [log trace debug info warn error fatal report]]))
 
 ;; Set s/*explain-out* to expound/printer on all threads.
 (set! s/*explain-out* expound/printer)
 (alter-var-root #'s/*explain-out* (constantly expound/printer))
 
-(def meet-id "madkjss3n61g")
-(def platform-ids ["psxoihq1ncdm"
-                   "piushftxfeut"
-                   "poisorct11q1"
-                   "pev7h2jn8u12"])
-
-(def platform 1)
-(def platform-id (nth platform-ids (dec platform)))
-
-(def referee-positions #{"left" "head" "right"})
-
-(def position->referee-id
-  (->> referee-positions
-       (map (fn [position] [(keyword position) (str "r" position "-" platform-id)]))
-       (into {})))
-
 (def current-attempt-id (atom nil))
-
-
-
-(def db-url (url/url "http://couchdb.liftingcast.com" meet-id))
-(def username "madkjss3n61g")
-(def password "xm4sj4ms")
-
-(def db (-> db-url
-            (assoc :username username
-                   :password password)
-            couch/get-database))
-
-(def get-document (partial couch/get-document db))
-
-(s/def :couchdb/db map?)
 
 (defn get-all-docs [db]
   (map :doc
        (couch/all-documents db {:include_docs true})))
+
+(s/def :couchdb/db map?)
 
 (s/def :couchdb/doc-seq (s/every (s/keys :req-un [:liftingcast/_id
                                                   :liftingcast/_rev])))
@@ -96,25 +73,22 @@
 (defn attempt-ids-for-lifter [lifter-id]
   (map (fn [i] (str "a" i "-" lifter-id)) (range 1 10)))
 
+(s/def :liftingcast.attempt/_id
+  (s/and :liftingcast/_id
+         #(string/starts-with? % "a")))
+
 (s/fdef attempt-ids-for-lifter
   :args (s/cat :lifter-id :liftingcast.lifter/_id)
-  :ret (s/coll-of (s/and :liftingcast/_id
-                         #(string/starts-with? % "a"))
+  :ret (s/coll-of :liftingcast.attempt/_id
                   :count 9
                   :distinct true))
 
-(let [in-memory-db (-> db get-all-docs index-docs-by-id)
-      attempt-ids-on-platform (for [lifter-id (lifter-ids-on-platform in-memory-db
-                                                                      platform-id)
-                                    attempt-id (attempt-ids-for-lifter lifter-id)]
-                                attempt-id)]
-  (s/def :liftingcast.attempt/_id (set attempt-ids-on-platform)))
-
 (defn fetch-current-attempt-id [db platform-id]
-  (-> platform-id get-document :currentAttemptId))
+  (->> platform-id (couch/get-document db) :currentAttemptId))
 
 (s/fdef fetch-current-attempt-id
-  :args (s/cat :db :couchdb/db :platform-id :liftingcast.platform/_id)
+  :args (s/cat :db :couchdb/db
+               :platform-id :liftingcast.platform/_id)
   :ret :liftingcast.attempt/_id)
 
 (defn set-current-attempt-id! [db platform-id]
@@ -186,9 +160,21 @@
            :max-count liftingcast-document-changes-max-count))
 
 
+(def referee-positions #{"left" "head" "right"})
+
+(s/def :liftingcast/position referee-positions)
 
 (s/def :liftingcast.referee/_id
-  (-> position->referee-id vals set))
+  (s/and :liftingcast/_id
+         #(string/starts-with? % "r")))
+
+(defn referee-id [platform-id position]
+  (str "r" (name position) "-" platform-id))
+
+(s/fdef referee-id
+  :args (s/cat :platform-id :liftingcast.platform/_id
+               :position :liftingcast/position)
+  :ret :liftingcast.referee/_id)
 
 (defmulti referee-change :attribute)
 
@@ -208,8 +194,6 @@
            :max-count liftingcast-document-changes-max-count))
 
 (s/def :liftingcast/platformId :liftingcast.platform/_id)
-
-(s/def :liftingcast/position referee-positions)
 
 (s/def :liftingcast/referee
   (s/merge :liftingcast/document
@@ -309,24 +293,7 @@
                             :liftingcast/clockState
                             :liftingcast/currentAttemptId])))
 
-(defn liftingcast-decisions->liftingcast-result [decisions]
-  (let [decision->count (frequencies (map :decision (vals decisions)))
-        num-good-decisions (get decision->count "good" 0)]
-    (if (<= 2 num-good-decisions)
-      "good"
-      "bad")))
 
-(s/fdef liftingcast-decisions->liftingcast-result
-  :args (s/cat :liftingcast-decisions :liftingcast/decisions)
-  :ret :liftingcast/result)
-
-(defn get-referee [in-memory-db position]
-  (in-memory-db (position->referee-id (keyword position))))
-
-(s/fdef get-referee
-  :args (s/cat :in-memory-db ::in-memory-db
-               :position :liftingcast/position)
-  :ret :liftingcast/referee)
 
 (s/def :liftingcast/session pos-int?)
 (s/def :liftingcast/flight (s/and string?
@@ -407,8 +374,8 @@
                           m)]
     (if-not (s/valid? new-changes-spec new-changes)
       (do
-        (println "INVALID CHANGES:")
-        (println (expound/expound new-changes-spec new-changes)))
+        (warn "INVALID CHANGES:")
+        (warn (expound/expound new-changes-spec new-changes)))
       (update (merge doc m) :changes
               (fn [old new]
                 (->> new
@@ -416,58 +383,69 @@
                      (take-last liftingcast-document-changes-max-count)))
               new-changes))))
 
-(set-current-attempt-id! db platform-id)
-
-(def ca (couch/change-agent db))
-
-(add-watch ca :current-attempt-id-on-platform
-           (fn [key agent previous-change change]
-             (cond
-               (= platform-id (:id change))
-               (do
-                 (println "Change to this platform doc\n"
-                          (with-out-str (pprint change))
-                          "\n")
-                 (set-current-attempt-id! db platform-id))
-
-               (s/valid? :liftingcast.referee/_id (:id change))
-               (println "Change to referee doc\n"
-                        (with-out-str (pprint change))
-                        "\n")
-
-               (s/valid? :liftingcast.attempt/_id (:id change))
-               (println "Change to attempt doc\n"
-                        (with-out-str (pprint change))
-                        "\n")
-
-               :else
-               (println "other change\n"
-                        (with-out-str (pprint change))
-                        "\n"))))
-
-(couch/start-changes ca)
-
-(defn start-timer [clock-timer-length]
+(defn start-timer [db platform clock-timer-length]
   ;; TODO: retry this on error
   (couch/put-document
    db
-   (update-document (get-document platform-id)
+   (update-document platform
                     {:clockState "started" :clockTimerLength clock-timer-length}
                     :liftingcast.platform/changes)))
 
 (s/fdef start-timer
-  :args (s/cat :clock-timer-length pos-int?))
+  :args (s/cat :db :couchdb/db
+               :platform :liftingcast/platform
+               :clock-timer-length pos-int?))
 
-(defn reset-timer [clock-timer-length]
+(defn reset-timer [db platform clock-timer-length]
   ;; TODO: retry this on error
   (couch/put-document
    db
-   (update-document (get-document platform-id)
+   (update-document platform
                     {:clockState "initial" :clockTimerLength clock-timer-length}
                     :liftingcast.platform/changes)))
 
 (s/fdef reset-timer
-  :args (s/cat :clock-timer-length pos-int?))
+  :args (s/cat :db :couchdb/db
+               :platform :liftingcast/platform
+               :clock-timer-length pos-int?))
+
+(defn input-handler [db platform-id lights-duration-ms next-attempt-chan input]
+  (debug "Input:\n" (with-out-str (pprint input)))
+  (case (:statusType input)
+    "LIGHTS"
+    (let [decisions {:left (:refLeft input)
+                     :head (:refHead input)
+                     :right (:refRight input)}
+          left-referee (couch/get-document db (referee-id platform-id "left"))
+          head-referee (couch/get-document db (referee-id platform-id "head"))
+          right-referee (couch/get-document db (referee-id platform-id "right"))
+          turn-on-liftingcast-lights? (pos? lights-duration-ms)]
+      ;; TODO: retry this on error
+      (when turn-on-liftingcast-lights?
+        (couch/bulk-update
+         db
+         [(update-document left-referee (:left decisions) :liftingcast.referee/changes)
+          (update-document head-referee (:head decisions) :liftingcast.referee/changes)
+          (update-document right-referee (:right decisions) :liftingcast.referee/changes)]))
+
+      (async/go
+        (when turn-on-liftingcast-lights?
+          (<! (async/timeout lights-duration-ms)))
+        (>! next-attempt-chan decisions)))
+
+    "CLOCK"
+    (case (:clockState input)
+      "STARTED"
+      (let [platform (couch/get-document db platform-id)]
+        (start-timer db platform (:timerLength input)))
+
+      "RESET"
+      (let [platform (couch/get-document db platform-id)]
+        (reset-timer db platform (:timerLength input)))
+
+      (debug "UNRECOGNIZED CLOCK STATE IN INPUT:" (with-out-str (pprint input))))
+
+    (debug "UNRECOGNIZED STATUS TYPE IN INPUT:" (with-out-str (pprint input)))))
 
 (s/def :drl/refLeft :liftingcast.decisions/decision)
 (s/def :drl/refHead :liftingcast.decisions/decision)
@@ -486,45 +464,25 @@
                    :drl/timerLength]))
 (s/def :drl/output (s/multi-spec drl-output :statusType))
 
-(defn make-input-handler [liftingcast-lights-on-duration-ms next-attempt-chan]
-  (fn [input]
-    {:pre [(s/valid? :drl/output input)]}
-    (println "Input:")
-    (pprint input)
-    (case (:statusType input)
-      "LIGHTS"
-      (let [decisions {:left (:refLeft input)
-                       :head (:refHead input)
-                       :right (:refRight input)}
-            left-referee (get-document (:left position->referee-id))
-            head-referee (get-document (:head position->referee-id))
-            right-referee (get-document (:right position->referee-id))]
-        ;; TODO: retry this on error
-        (couch/bulk-update
-         db
-         [(update-document left-referee (:left decisions) :liftingcast.referee/changes)
-          (update-document head-referee (:head decisions) :liftingcast.referee/changes)
-          (update-document right-referee (:right decisions) :liftingcast.referee/changes)])
+(s/fdef input-handler
+  :args (s/cat :db :couchdb/db
+               :platform-id :liftingcast.platform/_id
+               :lights-duration-ms (s/int-in 0 10001)
+               :next-attempt-chan any?
+               :input :drl/output))
 
-        (async/go
-          (<! (async/timeout liftingcast-lights-on-duration-ms))
-          (>! next-attempt-chan decisions)))
+(defn liftingcast-decisions->liftingcast-result [decisions]
+  (let [decision->count (frequencies (map :decision (vals decisions)))
+        num-good-decisions (get decision->count "good" 0)]
+    (if (<= 2 num-good-decisions)
+      "good"
+      "bad")))
 
-      "CLOCK"
-      (case (:clockState input)
-        "STARTED"
-        (start-timer (:timerLength input))
+(s/fdef liftingcast-decisions->liftingcast-result
+  :args (s/cat :liftingcast-decisions :liftingcast/decisions)
+  :ret :liftingcast/result)
 
-        "RESET"
-        (reset-timer (:timerLength input))
-
-        (println "UNRECOGNIZED CLOCK STATE IN INPUT:"
-                 (with-out-str (pprint input))))
-
-      (println "UNRECOGNIZED STATUS TYPE IN INPUT:"
-               (with-out-str (pprint input))))))
-
-(defn mark-attempt [attempt decisions]
+(defn mark-attempt [db attempt decisions]
   ;; TODO: retry this on error
   (couch/put-document
    db
@@ -534,10 +492,11 @@
                     :liftingcast.attempt/changes)))
 
 (s/fdef mark-attempt
-  :args (s/cat :attempt :liftingcast/attempt
+  :args (s/cat :db :couchdb/db
+               :attempt :liftingcast/attempt
                :decisions :liftingcast/decisions))
 
-(defn turn-off-lights [left-referee head-referee right-referee]
+(defn turn-off-lights [db left-referee head-referee right-referee]
   (let [referee-reset-data {:cards nil :decision nil}]
     ;; TODO: retry this on error
    (couch/bulk-update
@@ -553,11 +512,12 @@
                       :liftingcast.referee/changes)])))
 
 (s/fdef turn-off-lights
-  :args (s/cat :left-referee :liftingcast/referee
+  :args (s/cat :db :couchdb/db
+               :left-referee :liftingcast/referee
                :head-referee :liftingcast/referee
                :right-referee :liftingcast/referee))
 
-(defn select-attempt-and-reset-clock [platform attempt-id]
+(defn select-attempt-and-reset-clock [db platform attempt-id]
   ;; TODO: retry this on error
   (couch/put-document
    db
@@ -566,46 +526,240 @@
                     :liftingcast.platform/changes)))
 
 (s/fdef select-attempt-and-reset-clock
-  :args (s/cat :platform :liftingcast/platform
+  :args (s/cat :db :couchdb/db
+               :platform :liftingcast/platform
                :attempt-id :liftingcast.attempt/_id))
 
+
+
+(defn parse-meet-data [file day-number platform-number]
+  (debug "Parsing" (.getAbsolutePath file) "for meet credentials and platform id.")
+  (let [meet-data (-> file slurp json/parse-string)
+        d (str day-number)
+        p (str platform-number)]
+    {:meet-id (get-in meet-data ["credentials" d "meetId"])
+     :password (get-in meet-data ["credentials" d "password"])
+     :platform-id (get-in meet-data ["platformIds" d p])}))
+
+(s/def ::meet-id (s/and string?
+                        #(string/starts-with? % "m")))
+(s/def ::password (s/and string?
+                         #(-> % count pos?)))
+(s/def ::platform-id :liftingcast.platform/_id)
+
+(s/fdef parse-meet-data
+  :args (s/cat :file (fn [f]
+                       (try
+                         (.exists f)
+
+                         (catch Exception e
+                           false)))
+               :day-number (s/int-in 1 5)
+               :platform-number (s/int-in 1 5))
+  :ret (s/keys :req-un [::meet-id ::password ::platform-id]))
+
+(defn init [day-number platform-number lights-duration-ms]
+  (let [port 3000
+        meet-data (io/file "liftingcast-creds-and-platform-ids.json")
+        {:keys [meet-id password platform-id]} (parse-meet-data meet-data
+                                                                day-number
+                                                                platform-number)]
+    (assert (s/valid? ::meet-id meet-id)
+            (str meet-id " is not a valid meet ID; Liftingcast meet IDs are double-quoted strings that start with the letter \"m\".
+Get the meet ID from the URL for the meet page on Liftingcast and correct the entry in " (.getAbsolutePath meet-data) "\n\n"))
+    (assert (s/valid? ::password password)
+            (if (and (string? password)
+                     (zero? (count password)))
+              (str "There is no password for day " day-number
+                   " in " (.getAbsolutePath meet-data)
+                   "\nEdit the file and run this program again.\n\n")
+              (str password " is not a valid password. The password must be a double-quoted string in " (.getAbsolutePath meet-data)
+                   "\nEdit the file and run this program again.\n\n")))
+    (assert (s/valid? ::platform-id platform-id)
+            (str meet-id " is not a valid platform ID; Liftingcast platform IDs are double-quoted strings that start with the letter \"p\".
+Get the platform ID from the URL for the meet page for platform " platform-number " on Liftingcast and correct the entry in " (.getAbsolutePath meet-data) "\n\n"))
+    (println (str "\n\n\n\nGood morning, Scott. It's day #" day-number ".\n\n"))
+    (println "Meet ID:             " meet-id)
+    (println "Password:            " password)
+    (println "Platform ID:         " platform-id)
+    (println "Webserver port:      " port)
+    (println "Lights duration (ms):" lights-duration-ms)
+    (println "")
+    (info "\nThe webserver output and liftingcast database changes feed will display below.\n\n")
+
+    (let [db (-> (url/url "http://couchdb.liftingcast.com" meet-id)
+                 (assoc :username meet-id
+                        :password password)
+                 couch/get-database)
+          input-chan (async/chan 10)
+          next-attempt-chan (async/chan)]
+      (set-current-attempt-id! db platform-id)
+
+      (def ca (couch/change-agent db))
+
+      (add-watch ca :current-attempt-id-on-platform
+                 (fn [key agent previous-change change]
+                   (cond
+                     (= platform-id (:id change))
+                     (do
+                       (debug "Change to this platform doc\n"
+                              (with-out-str (pprint change))
+                              "\n")
+                       (set-current-attempt-id! db platform-id))
+
+                     (s/valid? :liftingcast.referee/_id (:id change))
+                     (debug "Change to referee doc\n"
+                            (with-out-str (pprint change))
+                            "\n")
+
+                     (s/valid? :liftingcast.attempt/_id (:id change))
+                     (debug "Change to attempt doc\n"
+                            (with-out-str (pprint change))
+                            "\n")
+
+                     :else
+                     (debug "other change\n"
+                            (with-out-str (pprint change))
+                            "\n"))))
+
+      (couch/start-changes ca)
+      (debug "Connected to Liftingcast database and monitoring the current attempt on the platform.")
+
+      (async/thread
+        (jetty/run-jetty
+         (-> (fn [request]
+               (let [input (:params request)]
+                 (debug (str "Received input from DRL:\n" (with-out-str (pprint input)) "\n\n"))
+                 (async/put! input-chan input))
+               {:status 202 :headers {"Content-Type" "text/plain"}})
+             wrap-keyword-params
+             wrap-json-params)
+         {:port port}))
+      (debug "The webserver is listening for input (via HTTP requests) from DRL on port" port)
+
+      (async/go-loop []
+        (<! (async/timeout 1000))
+        (try
+          (input-handler db
+                         platform-id
+                         lights-duration-ms
+                         next-attempt-chan
+                         (<! input-chan))
+
+          (catch Exception e
+            (warn "\n\n\n\nException in next-attempt-chan-reader handler:")
+            (warn e)
+            (warn "\n\n\n\n")))
+        (recur))
+
+      (async/go-loop []
+        (try
+          (let [decisions (<! next-attempt-chan)
+                in-memory-db (-> db get-all-docs index-docs-by-id)
+                current-attempt (in-memory-db @current-attempt-id)
+                left-referee (in-memory-db (referee-id platform-id "left"))
+                head-referee (in-memory-db (referee-id platform-id "head"))
+                right-referee (in-memory-db (referee-id platform-id "right"))
+                platform (in-memory-db platform-id)
+                next-attempt-id (select-next-attempt-id in-memory-db platform-id)]
+            (mark-attempt db current-attempt decisions)
+            (turn-off-lights db left-referee head-referee right-referee)
+            (select-attempt-and-reset-clock db platform next-attempt-id))
+
+          (catch Exception e
+            (warn "\n\n\n\nException in next-attempt-chan-reader handler:")
+            (warn e)
+            (warn "\n\n\n\n")))
+        (recur)))))
+
+(s/fdef init
+  :args (s/cat :day-number (s/int-in 1 5)
+               :platform-number (s/int-in 1 5)
+               :lights-duration-ms (s/int-in 0 10001)))
+
+
+
+(def cli-options
+  [["-d" "--day-number DAY-NUMBER"
+    "The day number of the meet: 1 for Thursday, 2 for Friday, 3 for Saturday, 4 for Sunday."
+    :parse-fn edn/read-string
+    :validate [#(s/int-in-range? 1 5 %)
+               "Must be 1 for Thursday, 2 for Friday, 3 for Saturday, or 4 for Sunday."]]
+   ["-p" "--platform-number PLATFORM-NUMBER"
+    "The number of the platform, as entered into Liftingcast."
+    :parse-fn edn/read-string
+    :validate [#(s/int-in-range? 1 5 %)
+               "Must be 1, 2, 3, or 4."]]
+   ["-l" "--lights-duration-ms LIGHTS-DURATION-MS" "Duration in MILLISECONDS to show the lights. Default 5000, min 0, max 10000."
+    :default 5000
+    :parse-fn edn/read-string
+    :validate [#(s/int-in-range? 0 10001 %)
+               "Must be an integer between 0 and 10000."]]
+   ["-v" "--verbose VERBOSE"
+    "Whether to print to the console the Liftingcast database changes feed and the inputs from DRL. Default false."
+    :default false
+    :parse-fn edn/read-string
+    :validate [boolean?
+               "Must be true or false."]]
+   ["-h" "--help"
+    "Prints a description of the program and its usage."]])
+
+(defn usage [options-summary]
+  (str
+   "
+This program relays input from DRL (clock commands, referee lights) to
+Liftingcast.
+
+It listens for HTTP requests from DRL on port 3000.
+It requires an internet connection to send data to Liftingcast.
+
+The program reads in the liftingcast credentials and platform id from a JSON
+file called `<project root>/liftingcast-creds-and-platform-ids`.
+
+
+PROGRAM USAGE
+=============
+Specify the day number and platform id where the program will be running.
+Optionally, specify the duration in MILLISECONDS to show the Liftingcast lights
+and whether to print events to the console:\n\n"
+   options-summary))
+
+(defn error-msg [errors]
+  (str "The following errors occurred while parsing your command:\n\n"
+       (string/join "\n" errors)))
+
+(defn validate-args [args]
+  (let [{:keys [options errors summary]} (cli/parse-opts args cli-options)
+        args-set (set args)]
+    (if (:help options)
+      {:exit-msg (usage summary) :exit-ok? true}
+      (let [all-errors (cond-> errors
+                         (empty? (set/intersection #{"-d" "--day-number"} args-set))
+                         (conj "-d or --day-number must be provided as: 1 for Thursday, 2 for Friday, 3 for Saturday, or 4 for Sunday.")
+
+                         (empty? (set/intersection #{"-p" "--platform-number"} args-set))
+                         (conj "-p or --platform-number must be provided as: 1, 2, 3, or 4."))]
+        (if all-errors
+          {:exit-msg (error-msg all-errors)}
+          (select-keys options [:day-number
+                                :platform-number
+                                :lights-duration-ms
+                                :verbose]))))))
+
+(defn exit [status msg]
+  (println msg)
+  (System/exit status))
+
+
+
 (defn -main [& args]
-  (let [input-chan (async/chan 10)
-        liftingcast-lights-on-duration-ms 5000
-        next-attempt-chan (async/chan)
-        input-handler (make-input-handler liftingcast-lights-on-duration-ms
-                                          next-attempt-chan)]
-    (async/thread
-      (jetty/run-jetty
-       (-> (fn [request]
-             (async/put! input-chan (:params request))
-             {:status 202 :headers {"Content-Type" "text/plain"}})
-           wrap-keyword-params
-           wrap-json-params)
-       {:port 3000}))
-
-    (async/go-loop []
-      (<! (async/timeout 1000))
-      (input-handler (<! input-chan))
-      (recur))
-
-    (async/go-loop []
-      (try
-        (let [decisions (<! next-attempt-chan)
-              in-memory-db (-> db get-all-docs index-docs-by-id)]
-          (mark-attempt (in-memory-db @current-attempt-id) decisions)
-          (turn-off-lights (get-referee in-memory-db "left")
-                           (get-referee in-memory-db "head")
-                           (get-referee in-memory-db "right"))
-          (select-attempt-and-reset-clock
-           (in-memory-db platform-id)
-           (select-next-attempt-id in-memory-db platform-id)))
-
-        (catch Exception e
-          (println "\n\n\n\nException in next-attempt-chan-reader handler:")
-          (println e)
-          (print "\n\n\n\n")))
-      (recur))))
+  (let [{:keys [exit-msg exit-ok? day-number platform-number lights-duration-ms verbose]}
+        (validate-args args)]
+    (if exit-msg
+      (exit (if exit-ok? 0 1) exit-msg)
+      (do
+        (when-not verbose (timbre/set-level! :info))
+        (init day-number platform-number lights-duration-ms)))))
 
 
 
