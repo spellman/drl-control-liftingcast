@@ -176,6 +176,9 @@
                    :liftingcast/attribute
                    :liftingcast/timeStamp]))
 
+; See https://liftingcast.com/static/js/util/pouchActions.js #updateAttributesOnDocument
+(def liftingcast-document-changes-max-count 100)
+
 
 
 (s/def :liftingcast.referee/_id
@@ -196,7 +199,7 @@
 (s/def :liftingcast.referee/changes
   (s/every (s/multi-spec referee-change :attribute)
            :kind vector?
-           :max-count 100))
+           :max-count liftingcast-document-changes-max-count))
 
 (s/def :liftingcast/platformId :liftingcast.platform/_id)
 
@@ -228,7 +231,7 @@
 (s/def :liftingcast.attempt/changes
   (s/every (s/multi-spec attempt-change :attribute)
            :kind vector?
-           :max-count 100))
+           :max-count liftingcast-document-changes-max-count))
 
 (s/def :liftingcast/liftName #{"squat" "bench" "dead"})
 (s/def :liftingcast/attemptNumber #{"1" "2" "3"})
@@ -282,7 +285,7 @@
 (s/def :liftingcast.platform/changes
   (s/every (s/multi-spec platform-change :attribute)
            :kind vector?
-           :max-count 100))
+           :max-count liftingcast-document-changes-max-count))
 
 (s/def :liftingcast/name string?)
 (s/def :liftingcast/barAndCollarsWeight pos-int?)
@@ -389,8 +392,7 @@
   :ret (s/nilable :liftingcast.attempt/_id))
 
 (defn update-document [doc m changes-spec]
-  (let [num-changes-to-keep 100 ; See https://liftingcast.com/static/js/util/pouchActions.js #updateAttributesOnDocument
-        timestamp (str (java-time/instant))
+  (let [timestamp (str (java-time/instant))
         new-changes (mapv (fn [[k v]]
                             {:rev (:_rev doc)
                              :timeStamp timestamp
@@ -405,7 +407,7 @@
               (fn [old new]
                 (->> new
                      (into old)
-                     (take-last num-changes-to-keep)))
+                     (take-last liftingcast-document-changes-max-count)))
               new-changes))))
 
 (set-current-attempt-id! db platform-id)
