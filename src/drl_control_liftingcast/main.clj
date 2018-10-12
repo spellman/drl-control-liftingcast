@@ -383,6 +383,17 @@
                      (take-last liftingcast-document-changes-max-count)))
               new-changes))))
 
+(defn liftingcast-decisions->liftingcast-result [decisions]
+  (let [decision->count (frequencies (map :decision (vals decisions)))
+        num-good-decisions (get decision->count "good" 0)]
+    (if (<= 2 num-good-decisions)
+      "good"
+      "bad")))
+
+(s/fdef liftingcast-decisions->liftingcast-result
+  :args (s/cat :liftingcast-decisions :liftingcast/decisions)
+  :ret :liftingcast/result)
+
 (defn start-timer [db platform clock-timer-length]
   ;; TODO: retry this on error
   (couch/put-document
@@ -409,28 +420,93 @@
                :platform :liftingcast/platform
                :clock-timer-length pos-int?))
 
-(defn input-handler [db platform-id lights-duration-ms next-attempt-chan input]
+(defn mark-attempt [db attempt decisions]
+  ;; TODO: retry this on error
+  (couch/put-document
+   db
+   (update-document attempt
+                    {:result (liftingcast-decisions->liftingcast-result decisions)
+                     :decisions decisions}
+                    :liftingcast.attempt/changes)))
+
+(s/fdef mark-attempt
+  :args (s/cat :db :couchdb/db
+               :attempt :liftingcast/attempt
+               :decisions :liftingcast/decisions))
+
+(defn select-attempt-and-reset-clock [db platform attempt-id]
+  ;; TODO: retry this on error
+  (couch/put-document
+   db
+   (update-document platform
+                    {:currentAttemptId attempt-id :clockState "initial"}
+                    :liftingcast.platform/changes)))
+
+(s/fdef select-attempt-and-reset-clock
+  :args (s/cat :db :couchdb/db
+               :platform :liftingcast/platform
+               :attempt-id :liftingcast.attempt/_id))
+
+(defn set-lights [db referees decisions]
+  ;; TODO: retry this on error
+  (couch/bulk-update
+   db
+   [(update-document (:left referees) (:left decisions) :liftingcast.referee/changes)
+    (update-document (:head referees) (:head decisions) :liftingcast.referee/changes)
+    (update-document (:right referees) (:right decisions) :liftingcast.referee/changes)]))
+
+(s/def :set-lights/left :liftingcast/referee)
+(s/def :set-lights/head :liftingcast/referee)
+(s/def :set-lights/right :liftingcast/referee)
+
+(s/fdef set-lights
+  :args (s/cat :db :couchdb/db
+               :referees (s/keys :req-un [:set-lights/left
+                                          :set-lights/head
+                                          :set-lights/right])
+               :decisions :liftingcast/decisions))
+
+(def turn-on-lights set-lights)
+
+(defn turn-off-lights [db referees]
+  (let [referee-reset-data {:cards nil :decision nil}]
+    (set-lights db referees {:left referee-reset-data
+                             :head referee-reset-data
+                             :right referee-reset-data})))
+
+(defn input-handler [db platform-id lights-duration-ms input]
   (case (:statusType input)
     "LIGHTS"
-    (let [decisions {:left (:refLeft input)
+    (let [in-memory-db (-> db get-all-docs index-docs-by-id)
+          decisions {:left (:refLeft input)
                      :head (:refHead input)
                      :right (:refRight input)}
-          left-referee (couch/get-document db (referee-id platform-id "left"))
-          head-referee (couch/get-document db (referee-id platform-id "head"))
-          right-referee (couch/get-document db (referee-id platform-id "right"))
-          turn-on-liftingcast-lights? (pos? lights-duration-ms)]
-      ;; TODO: retry this on error
-      (when turn-on-liftingcast-lights?
-        (couch/bulk-update
-         db
-         [(update-document left-referee (:left decisions) :liftingcast.referee/changes)
-          (update-document head-referee (:head decisions) :liftingcast.referee/changes)
-          (update-document right-referee (:right decisions) :liftingcast.referee/changes)]))
+          current-attempt (in-memory-db @current-attempt-id)
+          platform (in-memory-db platform-id)
+          next-attempt-id (select-next-attempt-id in-memory-db platform-id)
+          turn-on-liftingcast-lights? (pos? lights-duration-ms)
+          mark-attempt-and-advance-delay-ms 750
+          left-referee-id (referee-id platform-id "left")
+          head-referee-id (referee-id platform-id "head")
+          right-referee-id (referee-id platform-id "right")]
+      (async/go
+        (when turn-on-liftingcast-lights?
+          (let [referees {:left (in-memory-db left-referee-id)
+                          :head (in-memory-db head-referee-id)
+                          :right (in-memory-db right-referee-id)}]
+            (turn-on-lights db referees decisions))
+          (<! (async/timeout lights-duration-ms))
+
+          (let [referees {:left (couch/get-document db left-referee-id)
+                          :head (couch/get-document db left-referee-id)
+                          :right (couch/get-document db left-referee-id)}]
+            (turn-off-lights db referees))))
 
       (async/go
         (when turn-on-liftingcast-lights?
-          (<! (async/timeout lights-duration-ms)))
-        (>! next-attempt-chan decisions)))
+          (<! (async/timeout mark-attempt-and-advance-delay-ms)))
+        (mark-attempt db current-attempt decisions)
+        (select-attempt-and-reset-clock db platform next-attempt-id)))
 
     "CLOCK"
     (case (:clockState input)
@@ -467,67 +543,7 @@
   :args (s/cat :db :couchdb/db
                :platform-id :liftingcast.platform/_id
                :lights-duration-ms (s/int-in 0 10001)
-               :next-attempt-chan any?
                :input :drl/output))
-
-(defn liftingcast-decisions->liftingcast-result [decisions]
-  (let [decision->count (frequencies (map :decision (vals decisions)))
-        num-good-decisions (get decision->count "good" 0)]
-    (if (<= 2 num-good-decisions)
-      "good"
-      "bad")))
-
-(s/fdef liftingcast-decisions->liftingcast-result
-  :args (s/cat :liftingcast-decisions :liftingcast/decisions)
-  :ret :liftingcast/result)
-
-(defn mark-attempt [db attempt decisions]
-  ;; TODO: retry this on error
-  (couch/put-document
-   db
-   (update-document attempt
-                    {:result (liftingcast-decisions->liftingcast-result decisions)
-                     :decisions decisions}
-                    :liftingcast.attempt/changes)))
-
-(s/fdef mark-attempt
-  :args (s/cat :db :couchdb/db
-               :attempt :liftingcast/attempt
-               :decisions :liftingcast/decisions))
-
-(defn turn-off-lights [db left-referee head-referee right-referee]
-  (let [referee-reset-data {:cards nil :decision nil}]
-    ;; TODO: retry this on error
-   (couch/bulk-update
-    db
-    [(update-document left-referee
-                      referee-reset-data
-                      :liftingcast.referee/changes)
-     (update-document head-referee
-                      referee-reset-data
-                      :liftingcast.referee/changes)
-     (update-document right-referee
-                      referee-reset-data
-                      :liftingcast.referee/changes)])))
-
-(s/fdef turn-off-lights
-  :args (s/cat :db :couchdb/db
-               :left-referee :liftingcast/referee
-               :head-referee :liftingcast/referee
-               :right-referee :liftingcast/referee))
-
-(defn select-attempt-and-reset-clock [db platform attempt-id]
-  ;; TODO: retry this on error
-  (couch/put-document
-   db
-   (update-document platform
-                    {:currentAttemptId attempt-id :clockState "initial"}
-                    :liftingcast.platform/changes)))
-
-(s/fdef select-attempt-and-reset-clock
-  :args (s/cat :db :couchdb/db
-               :platform :liftingcast/platform
-               :attempt-id :liftingcast.attempt/_id))
 
 
 
@@ -584,8 +600,7 @@ Get the platform ID from the URL for the meet page for platform " platform-numbe
                (assoc :username meet-id
                       :password password)
                couch/get-database)
-        input-chan (async/chan 10)
-        next-attempt-chan (async/chan)]
+        input-chan (async/chan 10)]
 
     (println (str "\n\n\n\nGood morning, Scott. It's day #" day-number ".\n\n"))
     (println "Meet ID:             " meet-id)
@@ -647,28 +662,7 @@ Get the platform ID from the URL for the meet page for platform " platform-numbe
         (input-handler db
                        platform-id
                        lights-duration-ms
-                       next-attempt-chan
                        (<! input-chan))
-
-        (catch Exception e
-          (warn "\n\n\n\nException in next-attempt-chan-reader handler:")
-          (warn e)
-          (warn "\n\n\n\n")))
-      (recur))
-
-    (async/go-loop []
-      (try
-        (let [decisions (<! next-attempt-chan)
-              in-memory-db (-> db get-all-docs index-docs-by-id)
-              current-attempt (in-memory-db @current-attempt-id)
-              left-referee (in-memory-db (referee-id platform-id "left"))
-              head-referee (in-memory-db (referee-id platform-id "head"))
-              right-referee (in-memory-db (referee-id platform-id "right"))
-              platform (in-memory-db platform-id)
-              next-attempt-id (select-next-attempt-id in-memory-db platform-id)]
-          (mark-attempt db current-attempt decisions)
-          (turn-off-lights db left-referee head-referee right-referee)
-          (select-attempt-and-reset-clock db platform next-attempt-id))
 
         (catch Exception e
           (warn "\n\n\n\nException in input-chan-reader handler:")
