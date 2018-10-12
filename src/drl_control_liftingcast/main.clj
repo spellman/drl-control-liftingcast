@@ -397,7 +397,7 @@
                :platform-id :liftingcast.platform/_id)
   :ret (s/nilable :liftingcast.attempt/_id))
 
-(defn update-document [doc m changes-spec]
+(defn update-document [doc m new-changes-spec]
   (let [timestamp (str (java-time/instant))
         new-changes (mapv (fn [[k v]]
                             {:rev (:_rev doc)
@@ -405,10 +405,10 @@
                              :attribute (name k)
                              :value v})
                           m)]
-    (if-not (s/valid? changes-spec new-changes)
+    (if-not (s/valid? new-changes-spec new-changes)
       (do
         (println "INVALID CHANGES:")
-        (println (expound/expound changes-spec new-changes)))
+        (println (expound/expound new-changes-spec new-changes)))
       (update (merge doc m) :changes
               (fn [old new]
                 (->> new
