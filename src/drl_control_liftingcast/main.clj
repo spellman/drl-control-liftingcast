@@ -136,7 +136,7 @@
     (every? false? (vals cards))
 
     (= "bad" decision)
-    (pos-int? (count (filter true? (vals cards))))
+    (pos? (count (filter true? (vals cards))))
 
     :else
     false))
