@@ -533,13 +533,30 @@
 
 
 (defn parse-meet-data [file day-number platform-number]
-  (debug "Parsing" (.getAbsolutePath file) "for meet credentials and platform id.")
-  (let [meet-data (-> file slurp json/parse-string)
-        d (str day-number)
-        p (str platform-number)]
-    {:meet-id (get-in meet-data ["credentials" d "meetId"])
-     :password (get-in meet-data ["credentials" d "password"])
-     :platform-id (get-in meet-data ["platformIds" d p])}))
+  (let [file-path (.getAbsolutePath file)]
+    (debug "Parsing" file-path "for meet credentials and platform id.")
+    (let [meet-data (-> file slurp json/parse-string)
+          d (str day-number)
+          p (str platform-number)
+          meet-id (get-in meet-data ["credentials" d "meetId"])
+          password (get-in meet-data ["credentials" d "password"])
+          platform-id (get-in meet-data ["platformIds" d p])]
+
+      (assert (s/valid? ::meet-id meet-id)
+              (str meet-id " is not a valid meet ID; Liftingcast meet IDs are double-quoted strings that start with the letter \"m\".
+Get the meet ID from the URL for the meet page on Liftingcast and correct the entry in " file-path "\n\n"))
+
+      (assert (s/valid? ::password password)
+              (if (and (string? password)
+                       (zero? (count password)))
+                (str "There is no password for day " day-number " in " file-path "\nEdit the file and run this program again.\n\n")
+                (str password " is not a valid password. The password must be a double-quoted string in " file-path "\nEdit the file and run this program again.\n\n")))
+
+      (assert (s/valid? ::platform-id platform-id)
+              (str meet-id " is not a valid platform ID; Liftingcast platform IDs are double-quoted strings that start with the letter \"p\".
+Get the platform ID from the URL for the meet page for platform " platform-number " on Liftingcast and correct the entry in " file-path "\n\n"))
+
+      {:meet-id meet-id :password password :platform-id platform-id})))
 
 (s/def ::meet-id (s/and string?
                         #(string/starts-with? % "m")))
@@ -560,24 +577,17 @@
 
 (defn init [day-number platform-number lights-duration-ms]
   (let [port 3000
-        meet-data (io/file "liftingcast-creds-and-platform-ids.json")
-        {:keys [meet-id password platform-id]} (parse-meet-data meet-data
+        meet-data-file-path "liftingcast-creds-and-platform-ids.json"
+        {:keys [meet-id password platform-id]} (parse-meet-data (io/file meet-data-file-path)
                                                                 day-number
-                                                                platform-number)]
-    (assert (s/valid? ::meet-id meet-id)
-            (str meet-id " is not a valid meet ID; Liftingcast meet IDs are double-quoted strings that start with the letter \"m\".
-Get the meet ID from the URL for the meet page on Liftingcast and correct the entry in " (.getAbsolutePath meet-data) "\n\n"))
-    (assert (s/valid? ::password password)
-            (if (and (string? password)
-                     (zero? (count password)))
-              (str "There is no password for day " day-number
-                   " in " (.getAbsolutePath meet-data)
-                   "\nEdit the file and run this program again.\n\n")
-              (str password " is not a valid password. The password must be a double-quoted string in " (.getAbsolutePath meet-data)
-                   "\nEdit the file and run this program again.\n\n")))
-    (assert (s/valid? ::platform-id platform-id)
-            (str meet-id " is not a valid platform ID; Liftingcast platform IDs are double-quoted strings that start with the letter \"p\".
-Get the platform ID from the URL for the meet page for platform " platform-number " on Liftingcast and correct the entry in " (.getAbsolutePath meet-data) "\n\n"))
+                                                                platform-number)
+        db (-> (url/url "http://couchdb.liftingcast.com" meet-id)
+               (assoc :username meet-id
+                      :password password)
+               couch/get-database)
+        input-chan (async/chan 10)
+        next-attempt-chan (async/chan)]
+
     (println (str "\n\n\n\nGood morning, Scott. It's day #" day-number ".\n\n"))
     (println "Meet ID:             " meet-id)
     (println "Password:            " password)
@@ -587,90 +597,84 @@ Get the platform ID from the URL for the meet page for platform " platform-numbe
     (println "")
     (info "\nThe webserver output and liftingcast database changes feed will display below.\n\n")
 
-    (let [db (-> (url/url "http://couchdb.liftingcast.com" meet-id)
-                 (assoc :username meet-id
-                        :password password)
-                 couch/get-database)
-          input-chan (async/chan 10)
-          next-attempt-chan (async/chan)]
-      (set-current-attempt-id! db platform-id)
+    (set-current-attempt-id! db platform-id)
 
-      (def ca (couch/change-agent db))
+    (def ca (couch/change-agent db))
 
-      (add-watch ca :current-attempt-id-on-platform
-                 (fn [key agent previous-change change]
-                   (cond
-                     (= platform-id (:id change))
-                     (do
-                       (debug "Change to this platform doc\n"
-                              (with-out-str (pprint change))
-                              "\n")
-                       (set-current-attempt-id! db platform-id))
-
-                     (s/valid? :liftingcast.referee/_id (:id change))
-                     (debug "Change to referee doc\n"
+    (add-watch ca :current-attempt-id-on-platform
+               (fn [key agent previous-change change]
+                 (cond
+                   (= platform-id (:id change))
+                   (do
+                     (debug "Change to this platform doc\n"
                             (with-out-str (pprint change))
                             "\n")
+                     (set-current-attempt-id! db platform-id))
 
-                     (s/valid? :liftingcast.attempt/_id (:id change))
-                     (debug "Change to attempt doc\n"
-                            (with-out-str (pprint change))
-                            "\n")
+                   (s/valid? :liftingcast.referee/_id (:id change))
+                   (debug "Change to referee doc\n"
+                          (with-out-str (pprint change))
+                          "\n")
 
-                     :else
-                     (debug "other change\n"
-                            (with-out-str (pprint change))
-                            "\n"))))
+                   (s/valid? :liftingcast.attempt/_id (:id change))
+                   (debug "Change to attempt doc\n"
+                          (with-out-str (pprint change))
+                          "\n")
 
-      (couch/start-changes ca)
-      (debug "Connected to Liftingcast database and monitoring the current attempt on the platform.")
+                   :else
+                   (debug "other change\n"
+                          (with-out-str (pprint change))
+                          "\n"))))
 
-      (async/thread
-        (jetty/run-jetty
-         (-> (fn [request]
-               (let [input (:params request)]
-                 (debug (str "Received input from DRL:\n" (with-out-str (pprint input)) "\n\n"))
-                 (async/put! input-chan input))
-               {:status 202 :headers {"Content-Type" "text/plain"}})
-             wrap-keyword-params
-             wrap-json-params)
-         {:port port}))
-      (debug "The webserver is listening for input (via HTTP requests) from DRL on port" port)
+    (couch/start-changes ca)
+    (debug "Connected to Liftingcast database and monitoring the current attempt on the platform.")
 
-      (async/go-loop []
-        (<! (async/timeout 1000))
-        (try
-          (input-handler db
-                         platform-id
-                         lights-duration-ms
-                         next-attempt-chan
-                         (<! input-chan))
+    (async/thread
+      (jetty/run-jetty
+       (-> (fn [request]
+             (let [input (:params request)]
+               (debug (str "Received input from DRL:\n" (with-out-str (pprint input)) "\n\n"))
+               (async/put! input-chan input))
+             {:status 202 :headers {"Content-Type" "text/plain"}})
+           wrap-keyword-params
+           wrap-json-params)
+       {:port port}))
+    (debug "The webserver is listening for input (via HTTP requests) from DRL on port" port)
 
-          (catch Exception e
-            (warn "\n\n\n\nException in next-attempt-chan-reader handler:")
-            (warn e)
-            (warn "\n\n\n\n")))
-        (recur))
+    (async/go-loop []
+      (<! (async/timeout 1000))
+      (try
+        (input-handler db
+                       platform-id
+                       lights-duration-ms
+                       next-attempt-chan
+                       (<! input-chan))
 
-      (async/go-loop []
-        (try
-          (let [decisions (<! next-attempt-chan)
-                in-memory-db (-> db get-all-docs index-docs-by-id)
-                current-attempt (in-memory-db @current-attempt-id)
-                left-referee (in-memory-db (referee-id platform-id "left"))
-                head-referee (in-memory-db (referee-id platform-id "head"))
-                right-referee (in-memory-db (referee-id platform-id "right"))
-                platform (in-memory-db platform-id)
-                next-attempt-id (select-next-attempt-id in-memory-db platform-id)]
-            (mark-attempt db current-attempt decisions)
-            (turn-off-lights db left-referee head-referee right-referee)
-            (select-attempt-and-reset-clock db platform next-attempt-id))
+        (catch Exception e
+          (warn "\n\n\n\nException in next-attempt-chan-reader handler:")
+          (warn e)
+          (warn "\n\n\n\n")))
+      (recur))
 
-          (catch Exception e
-            (warn "\n\n\n\nException in next-attempt-chan-reader handler:")
-            (warn e)
-            (warn "\n\n\n\n")))
-        (recur)))))
+    (async/go-loop []
+      (try
+        (let [decisions (<! next-attempt-chan)
+              in-memory-db (-> db get-all-docs index-docs-by-id)
+              current-attempt (in-memory-db @current-attempt-id)
+              left-referee (in-memory-db (referee-id platform-id "left"))
+              head-referee (in-memory-db (referee-id platform-id "head"))
+              right-referee (in-memory-db (referee-id platform-id "right"))
+              platform (in-memory-db platform-id)
+              next-attempt-id (select-next-attempt-id in-memory-db platform-id)]
+          (mark-attempt db current-attempt decisions)
+          (turn-off-lights db left-referee head-referee right-referee)
+          (select-attempt-and-reset-clock db platform next-attempt-id))
+
+        (catch Exception e
+          (warn "\n\n\n\nException in next-attempt-chan-reader handler:")
+          (warn e)
+          (warn "\n\n\n\n")))
+      (recur))))
 
 (s/fdef init
   :args (s/cat :day-number (s/int-in 1 5)
