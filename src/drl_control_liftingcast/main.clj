@@ -410,7 +410,6 @@
                :clock-timer-length pos-int?))
 
 (defn input-handler [db platform-id lights-duration-ms next-attempt-chan input]
-  (debug "Input:\n" (with-out-str (pprint input)))
   (case (:statusType input)
     "LIGHTS"
     (let [decisions {:left (:refLeft input)
