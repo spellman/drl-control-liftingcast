@@ -459,8 +459,26 @@
 (s/fdef reset-timer
   :args (s/cat :clock-timer-length pos-int?))
 
+(s/def :drl/refLeft :liftingcast.decisions/decision)
+(s/def :drl/refHead :liftingcast.decisions/decision)
+(s/def :drl/refRight :liftingcast.decisions/decision)
+
+(s/def :drl/clockState #{"STARTED" "RESET"})
+(s/def :drl/timerLength :liftingcast/clock-timer-length)
+
+(defmulti drl-output :statusType)
+(defmethod drl-output "LIGHTS" [_]
+  (s/keys :req-un [:drl/refLeft
+                   :drl/refHead
+                   :drl/refRight]))
+(defmethod drl-output "CLOCK" [_]
+  (s/keys :req-un [:drl/clockState
+                   :drl/timerLength]))
+(s/def :drl/output (s/multi-spec drl-output :statusType))
+
 (defn make-input-handler [liftingcast-lights-on-duration-ms next-attempt-chan]
   (fn [input]
+    {:pre [(s/valid? :drl/output input)]}
     (println "Input:")
     (pprint input)
     (case (:statusType input)
