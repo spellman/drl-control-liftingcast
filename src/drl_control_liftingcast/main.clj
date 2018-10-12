@@ -596,6 +596,7 @@ Get the platform ID from the URL for the meet page for platform " platform-numbe
     (println "")
 
     (debug "\nThe webserver output and liftingcast database changes feed will display below.\n\n")
+
     (set-current-attempt-id! db platform-id)
 
     (def ca (couch/change-agent db))
