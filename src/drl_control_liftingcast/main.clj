@@ -132,7 +132,8 @@
 (s/def :liftingcast.decisions/decision
   (s/and (s/keys :req-un [:liftingcast/decision
                           :liftingcast/cards])
-         valid-decision-from-referee?))
+         #(or (and (nil? (:decision %)) (nil? (:cards %)))
+              (valid-decision-from-referee? %))))
 (s/def :liftingcast/left :liftingcast.decisions/decision)
 (s/def :liftingcast/head :liftingcast.decisions/decision)
 (s/def :liftingcast/right :liftingcast.decisions/decision)
