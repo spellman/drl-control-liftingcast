@@ -179,6 +179,12 @@
 ; See https://liftingcast.com/static/js/util/pouchActions.js #updateAttributesOnDocument
 (def liftingcast-document-changes-max-count 100)
 
+(s/def :liftingcast/changes
+  (s/every (s/merge :liftingcast/change
+                    (s/keys :req-un [:liftingcast/value]))
+           :kind vector?
+           :max-count liftingcast-document-changes-max-count))
+
 
 
 (s/def :liftingcast.referee/_id
@@ -208,7 +214,7 @@
 (s/def :liftingcast/referee
   (s/merge :liftingcast/document
            (s/keys :req-un [:liftingcast.referee/_id
-                            :liftingcast.referee/changes
+                            :liftingcast/changes
                             :liftingcast/platformId
                             :liftingcast/position
                             :liftingcast/cards]
@@ -249,7 +255,7 @@
 (s/def :liftingcast/attempt
   (s/merge :liftingcast/document
            (s/keys :req-un [:liftingcast.attempt/_id
-                            :liftingcast.attempt/changes
+                            :liftingcast/changes
                             :liftingcast/liftName
                             :liftingcast/attemptNumber
                             :liftingcast/lifterId]
@@ -296,7 +302,7 @@
 (s/def :liftingcast/platform
   (s/merge :liftingcast/document
            (s/keys :req-un [:liftingcast.platform/_id
-                            :liftingcast.platform/changes
+                            :liftingcast/changes
                             :liftingcast/name
                             :liftingcast/barAndCollarsWeight
                             :liftingcast/clockTimerLength
