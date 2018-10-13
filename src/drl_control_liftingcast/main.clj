@@ -634,7 +634,7 @@
     (println "Lights duration (ms):" lights-duration-ms)
     (println "")
 
-    (debug "\nThe webserver output and liftingcast database changes feed will display below.\n\n")
+    (debug "\nThe webserver output and changes to this platform from the liftingcast database changes feed will display below.\n\n")
 
     (set-current-attempt-id! db platform-id)
 
@@ -642,28 +642,10 @@
 
     (add-watch ca :current-attempt-id-on-platform
                (fn [key agent previous-change change]
-                 (cond
-                   (= platform-id (:id change))
-                   (do
-                     (debug "Change to this platform doc\n"
-                            (with-out-str (pprint change))
-                            "\n")
-                     (set-current-attempt-id! db platform-id))
-
-                   (s/valid? :liftingcast.referee/_id (:id change))
-                   (debug "Change to referee doc\n"
-                          (with-out-str (pprint change))
-                          "\n")
-
-                   (s/valid? :liftingcast.attempt/_id (:id change))
-                   (debug "Change to attempt doc\n"
-                          (with-out-str (pprint change))
-                          "\n")
-
-                   :else
-                   (debug "other change\n"
-                          (with-out-str (pprint change))
-                          "\n"))))
+                 (when (= platform-id (:id change))
+                   (debug "Change to this platform doc\n" (with-out-str (pprint change))
+                          "\n\n")
+                   (set-current-attempt-id! db platform-id))))
 
     (couch/start-changes ca)
     (debug "Connected to Liftingcast database and monitoring the current attempt on the platform.")
