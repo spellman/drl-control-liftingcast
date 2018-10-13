@@ -454,9 +454,12 @@
     (update-document (:head referees) (:head decisions) :liftingcast.referee/changes)
     (update-document (:right referees) (:right decisions) :liftingcast.referee/changes)]))
 
-(s/def :set-lights/left :liftingcast/referee)
-(s/def :set-lights/head :liftingcast/referee)
-(s/def :set-lights/right :liftingcast/referee)
+(s/def :set-lights/left (s/and :liftingcast/referee
+                               #(= "left" (:position %))))
+(s/def :set-lights/head (s/and :liftingcast/referee
+                               #(= "head" (:position %))))
+(s/def :set-lights/right (s/and :liftingcast/referee
+                                #(= "right" (:position %))))
 
 (s/fdef set-lights
   :args (s/cat :db :couchdb/db
