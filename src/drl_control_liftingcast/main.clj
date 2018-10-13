@@ -675,7 +675,11 @@
        (-> (fn [request]
              (let [input (:params request)]
                (debug (str "Received input from DRL:\n" (with-out-str (pprint input)) "\n\n"))
-               (async/put! input-chan input))
+
+               (if (s/valid? :drl/output input)
+                 (async/put! input-chan input)
+                 (warn (str "Invalid input from DRL:\n" (with-out-str (pprint input))))))
+
              {:status 202 :headers {"Content-Type" "text/plain"}})
            wrap-keyword-params
            wrap-json-params)
