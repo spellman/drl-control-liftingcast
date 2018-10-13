@@ -552,27 +552,52 @@
   (let [file-path (.getAbsolutePath file)]
     (debug "Parsing" file-path "for meet credentials and platform id.")
     (let [meet-data (-> file slurp json/parse-string)
-          d (str day-number)
-          p (str platform-number)
-          meet-id (get-in meet-data ["credentials" d "meetId"])
-          password (get-in meet-data ["credentials" d "password"])
-          platform-id (get-in meet-data ["platformIds" d p])]
+          meet-ids (for [[day-num-str creds] (get meet-data "credentials")]
+                     (get creds "meetId"))
+          platform-ids (for [[day-num-str platform-ids] (get meet-data "platformIds")]
+                         (vals platform-ids))
+          meet-id-desc (str "Liftingcast meet IDs are double-quoted strings that start with the letter \"m\" and each must be unique.")
+          platform-id-desc "Liftingcast platform IDs are double-quoted strings that start with the letter \"p\" and for a given day, each platform ID must be unique."]
 
-      (assert (s/valid? ::meet-id meet-id)
-              (str meet-id " is not a valid meet ID; Liftingcast meet IDs are double-quoted strings that start with the letter \"m\".
-Get the meet ID from the URL for the meet page on Liftingcast and correct the entry in " file-path "\n\n"))
+      (assert (s/valid? (s/coll-of ::meet-id :count 4 :distinct true) meet-ids)
+              (str "There is a problem with the meet IDs. We need a valid meet ID for each of the 4 days.\n"
+                   meet-id-desc
+                   "\nCheck the meet IDs in " file-path " and correct the problem."))
 
-      (assert (s/valid? ::password password)
-              (if (and (string? password)
-                       (zero? (count password)))
-                (str "There is no password for day " day-number " in " file-path "\nEdit the file and run this program again.\n\n")
-                (str password " is not a valid password. The password must be a double-quoted string in " file-path "\nEdit the file and run this program again.\n\n")))
+      (assert (s/valid?
+               (s/coll-of
+                (s/coll-of :liftingcast.platform/_id :count 4 :distinct true)
+                :count 4)
+               platform-ids)
+              (str "There is a problem with the platform IDs. For each of the 4 days, and for each of the 4 platforms, we need a valid platform ID.\n"
+                   platform-id-desc
+                   "\nCheck the platform IDs in " file-path " and correct the problem."))
 
-      (assert (s/valid? ::platform-id platform-id)
-              (str meet-id " is not a valid platform ID; Liftingcast platform IDs are double-quoted strings that start with the letter \"p\".
-Get the platform ID from the URL for the meet page for platform " platform-number " on Liftingcast and correct the entry in " file-path "\n\n"))
+      (let [d (str day-number)
+            p (str platform-number)
+            meet-id (get-in meet-data ["credentials" d "meetId"])
+            password (get-in meet-data ["credentials" d "password"])
+            platform-id (get-in meet-data ["platformIds" d p])]
 
-      {:meet-id meet-id :password password :platform-id platform-id})))
+        (assert (s/valid? ::meet-id meet-id)
+                (str meet-id " is not a valid meet ID.\n"
+                     meet-id-desc
+                     "\nGet the meet ID from the URL for the meet page on Liftingcast and correct the entry in " file-path "\n\n"))
+
+        (assert (s/valid? ::password password)
+                (if (and (string? password)
+                         (zero? (count password)))
+                  (str "There is no password for day " day-number " in " file-path
+                       "\nEdit the file and run this program again.\n\n")
+                  (str password " is not a valid password. The password must be a double-quoted string in " file-path
+                       "\nEdit the file and run this program again.\n\n")))
+
+        (assert (s/valid? ::platform-id platform-id)
+                (str meet-id " is not a valid platform ID.\n"
+                     platform-id-desc
+                     "\nGet the platform ID from the URL for the meet page for platform " platform-number " on Liftingcast and correct the entry in " file-path "\n\n"))
+
+        {:meet-id meet-id :password password :platform-id platform-id}))))
 
 (s/def ::meet-id (s/and string?
                         #(string/starts-with? % "m")))
