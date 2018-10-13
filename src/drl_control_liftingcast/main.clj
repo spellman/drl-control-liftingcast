@@ -658,7 +658,8 @@
 
                (if (s/valid? :drl/output input)
                  (async/put! input-chan input)
-                 (warn (str "Invalid input from DRL:\n" (with-out-str (pprint input))))))
+                 (warn (str "Invalid input in incoming HTTP request:\n"
+                            (with-out-str (pprint input))))))
 
              {:status 202 :headers {"Content-Type" "text/plain"}})
            wrap-keyword-params
