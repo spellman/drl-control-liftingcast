@@ -255,7 +255,8 @@
 
 (defmulti platform-change :attribute)
 
-(s/def :liftingcast.platform.change.current-attempt-id/value :liftingcast/_id)
+(s/def :liftingcast.platform.change.current-attempt-id/value
+  (s/nilable :liftingcast.attempt/_id))
 (defmethod platform-change "currentAttemptId" [_]
   (s/merge :liftingcast/change
            (s/keys :req-un [:liftingcast.platform.change.current-attempt-id/value])))
@@ -280,7 +281,7 @@
 (s/def :liftingcast/barAndCollarsWeight pos-int?)
 (s/def :liftingcast/clockTimerLength :liftingcast/clock-timer-length)
 (s/def :liftingcast/clockState :liftingcast/clock-state)
-(s/def :liftingcast/currentAttemptId :liftingcast.attempt/_id)
+(s/def :liftingcast/currentAttemptId (s/nilable :liftingcast.attempt/_id))
 
 (s/def :liftingcast/platform
   (s/merge :liftingcast/document
@@ -444,7 +445,7 @@
 (s/fdef select-attempt-and-reset-clock
   :args (s/cat :db :couchdb/db
                :platform :liftingcast/platform
-               :attempt-id :liftingcast.attempt/_id))
+               :attempt-id (s/nilable :liftingcast.attempt/_id)))
 
 (defn set-lights [db referees decisions]
   ;; TODO: retry this on error
