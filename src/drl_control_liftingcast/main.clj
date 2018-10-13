@@ -79,9 +79,7 @@
 
 (s/fdef attempt-ids-for-lifter
   :args (s/cat :lifter-id :liftingcast.lifter/_id)
-  :ret (s/coll-of :liftingcast.attempt/_id
-                  :count 9
-                  :distinct true))
+  :ret (s/coll-of :liftingcast.attempt/_id :count 9 :distinct true))
 
 (defn fetch-current-attempt-id [db platform-id]
   (->> platform-id (couch/get-document db) :currentAttemptId))
