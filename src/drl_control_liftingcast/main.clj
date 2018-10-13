@@ -500,8 +500,8 @@
           (<! (async/timeout lights-duration-ms))
 
           (let [referees {:left (couch/get-document db left-referee-id)
-                          :head (couch/get-document db left-referee-id)
-                          :right (couch/get-document db left-referee-id)}]
+                          :head (couch/get-document db head-referee-id)
+                          :right (couch/get-document db right-referee-id)}]
             (turn-off-lights db referees))))
 
       (async/go
