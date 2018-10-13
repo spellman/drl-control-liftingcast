@@ -479,23 +479,18 @@
 (defn input-handler [db platform-id lights-duration-ms input]
   (case (:statusType input)
     "LIGHTS"
-    (let [in-memory-db (-> db get-all-docs index-docs-by-id)
-          decisions {:left (:refLeft input)
+    (let [decisions {:left (:refLeft input)
                      :head (:refHead input)
                      :right (:refRight input)}
-          current-attempt (in-memory-db @current-attempt-id)
-          platform (in-memory-db platform-id)
-          next-attempt-id (select-next-attempt-id in-memory-db platform-id)
           turn-on-liftingcast-lights? (pos? lights-duration-ms)
-          mark-attempt-and-advance-delay-ms 750
           left-referee-id (referee-id platform-id "left")
           head-referee-id (referee-id platform-id "head")
           right-referee-id (referee-id platform-id "right")]
       (async/go
         (when turn-on-liftingcast-lights?
-          (let [referees {:left (in-memory-db left-referee-id)
-                          :head (in-memory-db head-referee-id)
-                          :right (in-memory-db right-referee-id)}]
+          (let [referees {:left (couch/get-document db left-referee-id)
+                          :head (couch/get-document db head-referee-id)
+                          :right (couch/get-document db right-referee-id)}]
             (turn-on-lights db referees decisions))
           (<! (async/timeout lights-duration-ms))
 
@@ -505,10 +500,12 @@
             (turn-off-lights db referees))))
 
       (async/go
-        (when turn-on-liftingcast-lights?
-          (<! (async/timeout mark-attempt-and-advance-delay-ms)))
-        (mark-attempt db current-attempt decisions)
-        (select-attempt-and-reset-clock db platform next-attempt-id)))
+        (let [in-memory-db (-> db get-all-docs index-docs-by-id)
+              current-attempt (in-memory-db @current-attempt-id)
+              platform (in-memory-db platform-id)
+              next-attempt-id (select-next-attempt-id in-memory-db platform-id)]
+          (mark-attempt db current-attempt decisions)
+          (select-attempt-and-reset-clock db platform next-attempt-id))))
 
     "CLOCK"
     (case (:clockState input)
