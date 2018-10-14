@@ -651,21 +651,21 @@
     (couch/start-changes ca)
     (debug "Connected to Liftingcast database and monitoring the current attempt on the platform.")
 
-    (async/thread
-      (jetty/run-jetty
-       (-> (fn [request]
-             (let [input (:params request)]
-               (debug (str "Received input from DRL:\n" (with-out-str (pprint input)) "\n\n"))
+    (let [handler (fn [request]
+                    (let [input (:params request)]
+                      (debug (str "Received input from DRL:\n" (with-out-str (pprint input)) "\n\n"))
 
-               (if (s/valid? :drl/output input)
-                 (async/put! input-chan input)
-                 (warn (str "Invalid input in incoming HTTP request:\n"
-                            (with-out-str (pprint input))))))
+                      (if (s/valid? :drl/output input)
+                        (async/put! input-chan input)
+                        (warn (str "Invalid input in incoming HTTP request:\n"
+                                   (with-out-str (pprint input))))))
 
-             {:status 202 :headers {"Content-Type" "text/plain"}})
+                    {:status 202 :headers {"Content-Type" "text/plain"}})]
+      (async/thread
+       (-> handler
            wrap-keyword-params
-           wrap-json-params)
-       {:port port}))
+           wrap-json-params
+           (jetty/run-jetty {:port port}))))
     (debug "The webserver is listening for input (via HTTP requests) from DRL on port" port)
 
     (async/go-loop []
