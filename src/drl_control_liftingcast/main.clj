@@ -434,17 +434,18 @@
                :attempt :liftingcast/attempt
                :decisions :liftingcast/decisions))
 
-(defn select-attempt-and-reset-clock [db platform attempt-id]
+(defn select-attempt [db platform-id attempt-id]
   ;; TODO: retry this on error
-  (couch/put-document
-   db
-   (update-document platform
-                    {:currentAttemptId attempt-id :clockState "initial"}
-                    :liftingcast.platform/changes)))
+  (let [platform (couch/get-document db platform-id)]
+    (couch/put-document
+     db
+     (update-document platform
+                      {:currentAttemptId attempt-id}
+                      :liftingcast.platform/changes))))
 
-(s/fdef select-attempt-and-reset-clock
+(s/fdef select-attempt
   :args (s/cat :db :couchdb/db
-               :platform :liftingcast/platform
+               :platform :liftingcast.platform/_id
                :attempt-id (s/nilable :liftingcast.attempt/_id)))
 
 (defn set-lights [db referees decisions]
@@ -487,6 +488,10 @@
           left-referee-id (referee-id platform-id "left")
           head-referee-id (referee-id platform-id "head")
           right-referee-id (referee-id platform-id "right")]
+
+      (let [platform (couch/get-document db platform-id)]
+        (reset-timer db platform (:clockTimerLength platform)))
+
       (async/go
         (when turn-on-liftingcast-lights?
           (let [referees {:left (couch/get-document db left-referee-id)
@@ -506,7 +511,7 @@
               platform (in-memory-db platform-id)
               next-attempt-id (select-next-attempt-id in-memory-db platform-id)]
           (mark-attempt db current-attempt decisions)
-          (select-attempt-and-reset-clock db platform next-attempt-id))))
+          (select-attempt db platform-id next-attempt-id))))
 
     "CLOCK"
     (case (:clockState input)
