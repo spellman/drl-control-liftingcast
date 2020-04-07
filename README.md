@@ -4,6 +4,13 @@
 #### This program is part of an integration to automate the role of scorekeeper in order to eliminate small but cumulative delays from a powerlifting meet.
 
 
+* [Background](#background)
+* [Problem](#problem)
+* [Solution](#solution)
+* [Considerations](#considerations)
+* [Legacy](#legacy)
+
+
 ### Background
 Digital Referee Lights (DRL) (https://www.squatdobbins.com/what-is-drl) is a hardware and software system of hand-held controllers, Raspberry Pi server, and display software by which referees in powerlifting and strongman control the event clocks and indicate successful or failed lifts. It is the International Powerlifting Federation standard for international competition and was also used at the 2020 Arnold Sports Festival Strongman competition.
 
