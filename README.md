@@ -1,7 +1,7 @@
 ## Integration: Controlling LiftingCast from DRL for the 2018 USA Powerlifting Raw National Championship
 
 
-### Goal: Automate the role of scorekeeper in order to eliminate small but cumulative delays and make the meet go faster.
+#### This program is part of an integration to automate the role of scorekeeper in order to eliminate small but cumulative delays from a powerlifting meet.
 
 
 ### Background
