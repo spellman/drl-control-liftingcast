@@ -224,9 +224,6 @@
 
 (s/def :liftingcast/liftName #{"squat" "bench" "dead"})
 (s/def :liftingcast/attemptNumber #{"1" "2" "3"})
-(s/def :liftingcast.lifter/_id
-  (s/and :liftingcast/_id
-         #(string/starts-with? % "l")))
 (s/def :liftingcast/lifterId :liftingcast.lifter/_id)
 (s/def :liftingcast/weight (s/and number? (complement neg?)))
 (s/def :liftingcast/result :liftingcast/ruling)
