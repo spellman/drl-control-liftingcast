@@ -8,6 +8,7 @@
 * [Problem](#problem)
 * [Solution](#solution)
 * [Considerations](#considerations)
+* [Result](#result)
 * [Legacy](#legacy)
 
 
