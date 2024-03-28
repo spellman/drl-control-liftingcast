@@ -12,7 +12,7 @@
 
 
 ### Background
-Digital Referee Lights (DRL) (https://www.squatdobbins.com/what-is-drl) is a hardware and software system of hand-held controllers, Raspberry Pi server, and display software by which referees in powerlifting and strongman control the event clocks and indicate successful or failed lifts. It is the International Powerlifting Federation standard for international competition and was also used at the 2020 Arnold Sports Festival Strongman competition.
+Digital Referee Lights (DRL) (https://www.squatdobbins.com/what-is-drl), created by **Scott Dobbins**, is a hardware and software system of hand-held controllers, Raspberry Pi based server, and display software by which referees in powerlifting and strongman control the event clocks and indicate successful or failed lifts. It is the International Powerlifting Federation standard for international competition and was also used at the 2020 Arnold Sports Festival Strongman competition.
 
 LiftingCast (https://liftingcast.com) is the most widely used powerlifting scoring system and meet-direction software. While LiftingCast includes referee-controller views, they are less user-friendly than DRL and, in practice, referees are asked to use them on their own mobile devices, making device battery life a problem. LiftingCast is a React + Redux + PouchDB app with a Ruby on Rails backend and CouchDB database. At the time of this project there was a minimal Rails API and nearly all functionality was implemented in the web client, whose UI was driven by the PouchDB changes feed.
 
@@ -27,11 +27,11 @@ The meet advances from one lifter to the next only when the scorekeeper advances
 
 ### Solution
 We can automate input of the referees' decisions to LiftingCast. The referees push the buttons on their respective DRL controllers to indicate their decisions. DRL then displays appropriate graphics on a monitor for the crowd and the scorekeeper to see.  
-Instead of asking the scorekeeper to watch the DRL display and input the decisions into the scoring program, Scott Dobbins (creator of DRL) and I sent the decisions directly from DRL to LiftingCast by updating the appropriate CouchDB documents.
+Instead of asking the scorekeeper to watch the DRL display and input the decisions into the scoring program, Scott and I sent the decisions directly from DRL to LiftingCast by updating the appropriate CouchDB documents.
 
 Since both DRL and LiftingCast can display the clock and the referees' decisions, we decided to have them both display this information, synced up as well as they could be. (DRL has the information immediately; LiftingCast is delayed (usually less than a second) while our integration processes the information and writes to CouchDB, CouchDB replicates to a LiftingCast client's PouchDB, the PouchDB changes feed is processed, and the UI is updated.)
 
-Scott modified DRL to communicate each set of referee decisions to the Clojure program in this project.
+Scott modified DRL to communicate each set of referee decisions to my Clojure program in this project.
 
 _This program reads from and writes directly to the LiftingCast database in order to make the complete series of updates that LiftingCast's own web client would make._ That is, we
 * Start, stop, or reset the LiftingCast clock based on the chief referee's inputs to DRL.
@@ -56,5 +56,12 @@ We ended up using HTTP to send data from DRL to the Clojure program:
 * I embedded a Jetty server into the Clojure program: https://github.com/spellman/drl-control-liftingcast/tree/master (master). It ran on a background thread and validated inputs against the spec and put valid inputs on a buffered core.async (https://github.com/clojure/core.async) channel. In a go-loop, I took the inputs from that channel and processed them, writing modified documents to the LiftingCast CouchDB at the proper times to cause the desired updates to the LiftingCast website UI.
 
 
+### Result
+I performed extensive local testing in the week leading up to the event and felt confident about employing this system. The system worked in the live event. As above, Scott supervised it and was ready to make corrections with the manual controls but he didn't need to do so:
+![drl-control-liftingcast-success](https://github.com/spellman/drl-control-liftingcast/assets/1714777/c9631445-001f-40e8-a85f-7d9fa680c72d)
+
+
+
 ### Legacy
-Scott and I proved the auto-scorekeeper concept with this program and its (proprietary) complementary addition to DRL. Scott and the author of LiftingCast subsequently coordinated to add an officially supported version of this concept via a Flask server in DRL and long-polling from LiftingCast. This program was thereby made obsolete.
+1. Scott and I proved the auto-scorekeeper concept with this program and its (proprietary) complementary addition to DRL. Scott and the author of LiftingCast subsequently coordinated to add an officially supported version of this concept via a Flask server in DRL and long-polling from LiftingCast. This program was thereby made obsolete.
+2. In reverse engineering the LiftingCast client functionality, I found the cause of and a fix for a longtime bug in LiftingCast, which I offered to its author.
